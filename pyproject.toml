@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "event-calendar-builder"
+version = "0.1.0"
+description = "Calendar-first API for moderated community events"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "psycopg[binary,pool]>=3.2,<4",
+  "python-dateutil>=2.9,<3",
+  "python-dotenv>=1.1,<2",
+  "uvicorn[standard]>=0.34,<1",
+]
+
+[project.optional-dependencies]
+test = [
+  "httpx>=0.28,<1",
+  "pytest>=8.3,<9",
+]
+
+[project.scripts]
+calendar-api = "calendar_api.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/calendar_api"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
