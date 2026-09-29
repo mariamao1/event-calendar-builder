@@ -33,3 +33,20 @@ uv run calendar-api serve
 OpenAPI documentation is available at `http://127.0.0.1:8000/docs`. See
 [`docs/backend.md`](docs/backend.md) for endpoint semantics, recurrence
 materialization, operations, and test commands.
+
+## Month calendar
+
+The same server exposes the primary calendar at `http://127.0.0.1:8000/`.
+It shows only approved occurrences, renders all-day and cross-date events as
+week-spanning bands, and keeps crowded days usable through a complete day
+dialog. Use the arrows to move one month at a time, **Today** to return to the
+current month, or select the month heading to jump directly to a month/year.
+
+When link access is enabled, open the UI with the private token in the URL:
+
+```text
+http://127.0.0.1:8000/?token=YOUR_CALENDAR_ACCESS_TOKEN
+```
+
+The browser forwards that token only to calendar API reads. Static assets do
+not contain calendar data and remain independently cacheable.

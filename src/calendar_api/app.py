@@ -4,6 +4,7 @@ import logging
 import math
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime, time, timedelta
+from pathlib import Path
 from typing import Annotated, Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -11,7 +12,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from dateutil.relativedelta import relativedelta
 from fastapi import Depends, FastAPI, Header, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 
 from . import service as postgres_service
 from . import sqlite_service
@@ -215,6 +217,19 @@ def create_app(
 
     admin = Depends(require_admin)
     link = Depends(require_link)
+    frontend_dir = Path(__file__).with_name("frontend")
+
+    # The browser client is kept alongside the API package so a normal
+    # `calendar-api serve` command is the only process needed in production.
+    app.mount(
+        "/static",
+        StaticFiles(directory=frontend_dir / "static"),
+        name="static",
+    )
+
+    @app.get("/", dependencies=[link], include_in_schema=False)
+    def month_view() -> FileResponse:
+        return FileResponse(frontend_dir / "index.html", media_type="text/html")
 
     @app.get("/health")
     def health() -> dict:

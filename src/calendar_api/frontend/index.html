@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Community Calendar</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="site-header">
+        <a class="brand" href="/" aria-label="Community Calendar home">
+          <span class="brand-mark" aria-hidden="true">
+            <span></span><span></span><span></span><span></span>
+          </span>
+          <span>
+            <span class="brand-name">Gather</span>
+            <span class="brand-kicker">Community calendar</span>
+          </span>
+        </a>
+        <div class="header-note">
+          <span class="live-dot" aria-hidden="true"></span>
+          Approved community events
+        </div>
+      </header>
+
+      <main>
+        <section class="calendar-card" aria-labelledby="month-heading">
+          <div class="calendar-toolbar">
+            <div class="month-heading-wrap">
+              <p class="eyebrow">What’s happening</p>
+              <button
+                class="month-heading-button"
+                id="month-heading"
+                type="button"
+                aria-haspopup="dialog"
+                aria-controls="month-jump"
+              >
+                <span id="month-label">Month</span>
+                <svg viewBox="0 0 20 20" aria-hidden="true">
+                  <path d="m5.5 7.5 4.5 4 4.5-4" />
+                </svg>
+              </button>
+            </div>
+
+            <div class="calendar-actions" aria-label="Calendar navigation">
+              <button class="today-button" id="today-button" type="button">Today</button>
+              <div class="arrow-buttons">
+                <button id="previous-month" type="button" aria-label="Previous month">
+                  <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m12.5 4.5-5 5.5 5 5.5" /></svg>
+                </button>
+                <button id="next-month" type="button" aria-label="Next month">
+                  <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7.5 4.5 5 5.5-5 5.5" /></svg>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="calendar-frame" aria-busy="true">
+            <div class="weekday-row" role="row" aria-hidden="true">
+              <span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span>
+              <span>Thu</span><span>Fri</span><span>Sat</span>
+            </div>
+            <div id="month-grid" class="month-grid" role="grid"></div>
+            <div id="loading-state" class="loading-state">
+              <span class="spinner" aria-hidden="true"></span>
+              <span>Gathering events…</span>
+            </div>
+          </div>
+
+          <footer class="calendar-footer">
+            <div class="legend" aria-label="Event legend">
+              <span><i class="legend-band" aria-hidden="true"></i>All-day &amp; multi-day</span>
+              <span><i class="legend-dot" aria-hidden="true"></i>Timed event</span>
+            </div>
+            <p id="status-region" role="status" aria-live="polite"></p>
+          </footer>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="month-jump" class="month-jump" aria-labelledby="jump-title">
+      <div class="dialog-surface compact-dialog">
+        <div class="jump-header">
+          <button id="jump-prev-year" type="button" aria-label="Previous year">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m12.5 4.5-5 5.5 5 5.5" /></svg>
+          </button>
+          <h2 id="jump-title"><span class="sr-only">Choose a month in </span><span id="jump-year"></span></h2>
+          <button id="jump-next-year" type="button" aria-label="Next year">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7.5 4.5 5 5.5-5 5.5" /></svg>
+          </button>
+        </div>
+        <div id="jump-months" class="jump-months"></div>
+        <button class="text-button close-jump" type="button" data-close="month-jump">Cancel</button>
+      </div>
+    </dialog>
+
+    <dialog id="day-dialog" class="detail-dialog" aria-labelledby="day-dialog-title">
+      <div class="dialog-surface">
+        <div class="dialog-header">
+          <div>
+            <p class="eyebrow">Day at a glance</p>
+            <h2 id="day-dialog-title"></h2>
+          </div>
+          <button class="icon-close" type="button" data-close="day-dialog" aria-label="Close day details">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" /></svg>
+          </button>
+        </div>
+        <div id="day-dialog-events" class="day-dialog-events"></div>
+      </div>
+    </dialog>
+
+    <dialog id="event-dialog" class="detail-dialog" aria-labelledby="event-dialog-title">
+      <div class="dialog-surface event-dialog-surface">
+        <div class="dialog-header">
+          <div id="event-dialog-groups" class="event-group-list"></div>
+          <button class="icon-close" type="button" data-close="event-dialog" aria-label="Close event details">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" /></svg>
+          </button>
+        </div>
+        <h2 id="event-dialog-title"></h2>
+        <dl id="event-dialog-meta" class="event-meta"></dl>
+        <p id="event-dialog-description" class="event-description"></p>
+        <a id="event-dialog-link" class="event-link" href="#" target="_blank" rel="noopener noreferrer">
+          Event website
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 13 13.5 6.5M9 6.5h4.5V11M13 14H6V7h3" /></svg>
+        </a>
+      </div>
+    </dialog>
+
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>
