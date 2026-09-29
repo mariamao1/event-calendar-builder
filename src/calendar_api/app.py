@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-import hmac
+import logging
+import math
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Annotated, Literal
@@ -10,14 +11,18 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from dateutil.relativedelta import relativedelta
 from fastapi import Depends, FastAPI, Header, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from . import service as postgres_service
 from . import sqlite_service
 from .config import Settings
 from .database import Database, SQLiteDatabase, create_database
 from .errors import ApiError, ValidationError
-from .schemas import EventRevisionInput, GroupCreate, GroupUpdate, ReviewInput
+from .rate_limit import RateLimiter
+from .schemas import EventRevisionInput, GroupCreate, GroupUpdate, LoginInput, ReviewInput
+from .security import SessionStore, tokens_equal, verify_password
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_boundary(
@@ -90,37 +95,126 @@ def create_app(
         version="0.1.0",
         lifespan=lifespan,
     )
+    sessions = SessionStore()
+    limiter = RateLimiter()
     app.state.database = database
     app.state.service = service
     app.state.settings = settings
+    app.state.sessions = sessions
+    app.state.rate_limiter = limiter
     if settings.cors_origins:
         app.add_middleware(
             CORSMiddleware,
             allow_origins=list(settings.cors_origins),
             allow_credentials=False,
             allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
-            allow_headers=["Content-Type", "X-Admin-Key"],
+            allow_headers=[
+                "Content-Type",
+                "X-Admin-Key",
+                "X-Calendar-Token",
+                "Authorization",
+            ],
         )
+
+    if not settings.calendar_access_token:
+        logger.warning(
+            "CALENDAR_ACCESS_TOKEN is not set; public routes are open. "
+            "Set it in production so the calendar is only reachable via its link."
+        )
+
+    @app.middleware("http")
+    async def robots_middleware(request: Request, call_next):  # type: ignore[no-untyped-def]
+        response = await call_next(request)
+        # The calendar is private to its link: keep every response,
+        # including errors, out of search engine indexes.
+        response.headers["X-Robots-Tag"] = "noindex, nofollow"
+        return response
 
     @app.exception_handler(ApiError)
     async def api_error_handler(_: Request, exc: ApiError) -> JSONResponse:
         return JSONResponse(
             status_code=exc.status_code,
             content={"error": {"code": exc.code, "message": exc.message}},
+            headers=exc.headers,
         )
 
-    def require_admin(
-        x_admin_key: Annotated[str | None, Header()] = None,
+    def client_ip(request: Request) -> str:
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            first = forwarded.split(",")[0].strip()
+            if first:
+                return first
+        if request.client is not None:
+            return request.client.host
+        return "unknown"
+
+    def enforce_rate_limit(
+        request: Request, *, scope: str, limit: int, window_seconds: int
     ) -> None:
-        expected = settings.admin_api_key
-        if not expected:
+        allowed, retry_after = limiter.check(
+            f"{scope}:{client_ip(request)}",
+            limit=limit,
+            window_seconds=window_seconds,
+        )
+        if not allowed:
             raise ApiError(
-                503, "admin_not_configured", "ADMIN_API_KEY is not configured"
+                429,
+                "rate_limited",
+                "too many requests; slow down and retry later",
+                headers={"Retry-After": str(max(1, math.ceil(retry_after)))},
             )
-        if x_admin_key is None or not hmac.compare_digest(x_admin_key, expected):
-            raise ApiError(401, "unauthorized", "a valid X-Admin-Key is required")
+
+    def require_link(request: Request) -> None:
+        """Gate no-account routes on the unguessable calendar link token.
+
+        The token travels as `?token=` (or `?access_token=`) so the calendar
+        stays reachable by link, or as an `X-Calendar-Token` header for API
+        clients. Comparison is constant-time and enforced server-side.
+        """
+        expected = settings.calendar_access_token
+        if not expected:
+            return
+        provided = (
+            request.query_params.get("token")
+            or request.query_params.get("access_token")
+            or request.headers.get("x-calendar-token")
+        )
+        if not tokens_equal(provided, expected):
+            raise ApiError(
+                401, "unauthorized", "a valid calendar link token is required"
+            )
+
+    def require_admin(
+        request: Request,
+        x_admin_key: Annotated[str | None, Header()] = None,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> str:
+        """Require real admin authentication: a login session or the API key.
+
+        Sessions come from POST /api/v1/admin/login (password verified
+        against a salted PBKDF2 hash). The X-Admin-Key service key remains
+        accepted so existing operators keep working.
+        """
+        bearer: str | None = None
+        if authorization and authorization.lower().startswith("bearer "):
+            bearer = authorization[7:].strip() or None
+        if bearer:
+            username = sessions.validate(bearer)
+            if username is not None:
+                return username
+        expected = settings.admin_api_key
+        if not expected and not settings.admin_password_hash:
+            raise ApiError(
+                503,
+                "admin_not_configured",
+                "no admin credential is configured",
+            )
+        if expected and tokens_equal(x_admin_key, expected):
+            return settings.admin_username
+        raise ApiError(401, "unauthorized", "valid admin credentials are required")
 
     admin = Depends(require_admin)
+    link = Depends(require_link)
 
     @app.get("/health")
     def health() -> dict:
@@ -128,7 +222,58 @@ def create_app(
             connection.execute("SELECT 1")
         return {"status": "ok"}
 
-    @app.get("/api/v1/groups")
+    @app.get("/robots.txt", include_in_schema=False)
+    def robots_txt() -> PlainTextResponse:
+        # The calendar is private to its link: ask every crawler to stay out.
+        return PlainTextResponse("User-agent: *\nDisallow: /\n")
+
+    @app.post("/api/v1/admin/login")
+    def admin_login(payload: LoginInput, request: Request) -> dict:
+        """Authenticate with username + password and receive a session token.
+
+        Passwords are verified against the salted PBKDF2 hash in
+        ADMIN_PASSWORD_HASH using a constant-time comparison. Attempts are
+        rate limited per client IP to slow down credential guessing.
+        """
+        enforce_rate_limit(
+            request,
+            scope="login",
+            limit=settings.login_rate_limit_max,
+            window_seconds=settings.login_rate_limit_window_seconds,
+        )
+        if not settings.admin_password_hash:
+            raise ApiError(
+                503,
+                "admin_not_configured",
+                "ADMIN_PASSWORD_HASH is not configured",
+            )
+        username_ok = tokens_equal(payload.username, settings.admin_username)
+        password_ok = verify_password(
+            payload.password, settings.admin_password_hash
+        )
+        if not (username_ok and password_ok):
+            raise ApiError(401, "unauthorized", "invalid username or password")
+        token, expires_at = sessions.create(
+            settings.admin_username,
+            ttl_seconds=settings.admin_session_ttl_seconds,
+        )
+        return {
+            "token": token,
+            "token_type": "bearer",
+            "username": settings.admin_username,
+            "expires_at": datetime.fromtimestamp(expires_at, UTC).isoformat(),
+        }
+
+    @app.post("/api/v1/admin/logout", dependencies=[admin])
+    def admin_logout(request: Request) -> dict:
+        """Revoke the calling admin session token, if one was used."""
+        authorization = request.headers.get("authorization", "")
+        bearer: str | None = None
+        if authorization.lower().startswith("bearer "):
+            bearer = authorization[7:].strip() or None
+        return {"revoked": sessions.revoke(bearer)}
+
+    @app.get("/api/v1/groups", dependencies=[link])
     def groups() -> dict:
         with database.connection() as connection:
             items = service.list_groups(connection, include_inactive=False)
@@ -154,8 +299,20 @@ def create_app(
         with database.transaction() as connection:
             return service.update_group(connection, group_id, payload)
 
-    @app.post("/api/v1/events", status_code=status.HTTP_202_ACCEPTED)
-    def post_event(payload: EventRevisionInput) -> dict:
+    @app.post(
+        "/api/v1/events",
+        status_code=status.HTTP_202_ACCEPTED,
+        dependencies=[link],
+    )
+    def post_event(payload: EventRevisionInput, request: Request) -> dict:
+        # Anyone holding the link can submit with just a name, so submissions
+        # are rate limited per client IP to bound spam and abuse.
+        enforce_rate_limit(
+            request,
+            scope="submit",
+            limit=settings.submit_rate_limit_max,
+            window_seconds=settings.submit_rate_limit_window_seconds,
+        )
         with database.transaction() as connection:
             return service.create_event(connection, payload)
 
@@ -168,12 +325,12 @@ def create_app(
         with database.transaction() as connection:
             return service.create_revision(connection, event_id, payload)
 
-    @app.get("/api/v1/events/{event_id}")
+    @app.get("/api/v1/events/{event_id}", dependencies=[link])
     def event(event_id: UUID) -> dict:
         with database.connection() as connection:
             return service.get_published_event(connection, event_id)
 
-    @app.get("/api/v1/calendar")
+    @app.get("/api/v1/calendar", dependencies=[link])
     def calendar(
         start: str,
         end: str,

@@ -86,10 +86,12 @@ Public routes:
 | `GET` | `/api/v1/events/{event_id}` | One published event |
 | `POST` | `/api/v1/events` | Submit revision 1 for review |
 
-Admin routes (all require `X-Admin-Key`):
+Admin routes (require admin authentication, see below):
 
 | Method | Route | Purpose |
 | --- | --- | --- |
+| `POST` | `/api/v1/admin/login` | Username/password login, issues a session token |
+| `POST` | `/api/v1/admin/logout` | Revoke the calling session token |
 | `GET/POST` | `/api/v1/admin/groups` | List all/create groups |
 | `PATCH` | `/api/v1/admin/groups/{group_id}` | Rename, describe, activate/deactivate |
 | `GET` | `/api/v1/admin/events?status=pending` | Moderation queue |
@@ -102,6 +104,46 @@ Admin routes (all require `X-Admin-Key`):
 Edits are intentionally admin-only until an event-specific, accountless
 management-token design is added. Publicly accepting an event ID alone would
 let anyone create a blocking pending revision.
+
+## Access model
+
+Two modes, both enforced server-side:
+
+- **Link mode (no account).** The calendar is private but reachable by anyone
+  holding its link: viewing groups, the calendar, published events, and
+  submitting events needs no account; submitters identify themselves by name
+  on each submission. The link carries an unguessable 256-bit token
+  (`CALENDAR_ACCESS_TOKEN`, generated with
+  `uv run calendar-api new-link-token`) sent as `?token=`, `?access_token=`,
+  or the `X-Calendar-Token` header, and is verified with a constant-time
+  comparison. When `CALENDAR_ACCESS_TOKEN` is unset (local development),
+  public routes stay open and the server logs a warning; set it in
+  production. Missing or wrong tokens return `401`.
+- **Admin mode (real authentication).** Approving, rejecting, revoking, group
+  management, and revision edits require authentication: either a session
+  token from `POST /api/v1/admin/login` (username from `ADMIN_USERNAME`,
+  password verified against the salted PBKDF2-HMAC-SHA256 hash in
+  `ADMIN_PASSWORD_HASH`, generated with `uv run calendar-api hash-password`)
+  sent as `Authorization: Bearer <token>`, or the legacy `X-Admin-Key`
+  service key. Sessions are 256-bit random tokens with an absolute expiry
+  (`ADMIN_SESSION_TTL_SECONDS`, default 12h) and can be revoked via
+  `POST /api/v1/admin/logout`. Raw passwords and tokens are never stored or
+  logged. With no admin credential configured, admin routes fail closed with
+  `503`.
+
+**Search engines.** The calendar is excluded from indexing: every response
+carries `X-Robots-Tag: noindex, nofollow`, and `GET /robots.txt` answers
+`User-agent: *` / `Disallow: /`.
+
+**Rate limiting (decision: yes).** Because anyone with the link can submit
+with just a name, public submissions are rate limited per client IP with an
+in-memory sliding window (default 30/hour via `SUBMIT_RATE_LIMIT_MAX` /
+`SUBMIT_RATE_LIMIT_WINDOW_SECONDS`), and admin logins are limited (default
+10/15min via `LOGIN_RATE_LIMIT_MAX` / `LOGIN_RATE_LIMIT_WINDOW_SECONDS`) to
+slow credential guessing. Limits return `429` with a `Retry-After` header.
+The client IP prefers `X-Forwarded-For` when present, so run behind a proxy
+that sets it or directly. Sessions and rate-limit state are process-local;
+single-process deployment is assumed.
 
 ## Zero-install local operation
 

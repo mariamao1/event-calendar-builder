@@ -188,3 +188,8 @@ class ReviewInput(StrictModel):
     note: (
         Annotated[str, StringConstraints(strip_whitespace=True, max_length=4000)] | None
     ) = None
+
+
+class LoginInput(StrictModel):
+    username: Annotated[NonBlank, StringConstraints(max_length=160)]
+    password: str = Field(min_length=1, max_length=1024)

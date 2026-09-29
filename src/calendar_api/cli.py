@@ -10,6 +10,7 @@ from . import service as postgres_service
 from . import sqlite_service
 from .config import Settings
 from .database import apply_migrations, create_database
+from .security import hash_password, new_token
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -22,11 +23,35 @@ def _parser() -> argparse.ArgumentParser:
     subcommands.add_parser(
         "materialize", help="extend every published event's occurrence window"
     )
+    hash_parser = subcommands.add_parser(
+        "hash-password", help="print a salted hash for ADMIN_PASSWORD_HASH"
+    )
+    hash_parser.add_argument(
+        "--password",
+        help="password to hash (prompted securely when omitted; "
+        "prefer the prompt so the secret never lands in shell history)",
+    )
+    subcommands.add_parser(
+        "new-link-token",
+        help="print an unguessable token for CALENDAR_ACCESS_TOKEN",
+    )
     return parser
 
 
 def main() -> None:
     args = _parser().parse_args()
+    if args.command == "hash-password":
+        import getpass
+
+        password = args.password or getpass.getpass("Admin password: ")
+        print(hash_password(password))
+        print("Set ADMIN_PASSWORD_HASH to the line above.")
+        return
+    if args.command == "new-link-token":
+        token = new_token()
+        print(token)
+        print("Set CALENDAR_ACCESS_TOKEN to the line above.")
+        return
     settings = Settings.from_env()
     if args.command == "serve":
         uvicorn.run(
