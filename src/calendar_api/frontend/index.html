@@ -46,12 +46,17 @@
             </div>
 
             <div class="calendar-actions" aria-label="Calendar navigation">
+              <div class="view-switcher" id="view-switcher" role="group" aria-label="Calendar view">
+                <button id="view-month" type="button" data-view="month" aria-pressed="true">Month</button>
+                <button id="view-week" type="button" data-view="week" aria-pressed="false">Week</button>
+                <button id="view-day" type="button" data-view="day" aria-pressed="false">Day</button>
+              </div>
               <button class="today-button" id="today-button" type="button">Today</button>
               <div class="arrow-buttons">
-                <button id="previous-month" type="button" aria-label="Previous month">
+                <button id="previous-month" type="button" aria-label="Previous period">
                   <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m12.5 4.5-5 5.5 5 5.5" /></svg>
                 </button>
-                <button id="next-month" type="button" aria-label="Next month">
+                <button id="next-month" type="button" aria-label="Next period">
                   <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7.5 4.5 5 5.5-5 5.5" /></svg>
                 </button>
               </div>
@@ -59,11 +64,19 @@
           </div>
 
           <div class="calendar-frame" aria-busy="true">
-            <div class="weekday-row" role="row" aria-hidden="true">
+            <div class="weekday-row" id="month-weekday-row" role="row" aria-hidden="true">
               <span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span>
               <span>Thu</span><span>Fri</span><span>Sat</span>
             </div>
             <div id="month-grid" class="month-grid" role="grid"></div>
+            <div id="week-view" class="time-view" role="grid" aria-label="Week view" hidden>
+              <div id="week-allday" class="allday-row"></div>
+              <div id="week-grid" class="time-grid"></div>
+            </div>
+            <div id="day-view" class="time-view" role="grid" aria-label="Day view" hidden>
+              <div id="day-allday" class="allday-row"></div>
+              <div id="day-grid" class="time-grid"></div>
+            </div>
             <div id="loading-state" class="loading-state">
               <span class="spinner" aria-hidden="true"></span>
               <span>Gathering events…</span>

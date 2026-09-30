@@ -42,6 +42,15 @@ week-spanning bands, and keeps crowded days usable through a complete day
 dialog. Use the arrows to move one month at a time, **Today** to return to the
 current month, or select the month heading to jump directly to a month/year.
 
+Use the **Month / Week / Day** switcher to change views. Week and day are
+time grids: timed events are positioned by their start/end times, overlapping
+events sit side by side, and all-day events stay in their own all-day region
+above the grid. The grid always covers 7:00–19:00 and adaptively expands (with
+an hour of padding, clamped to the full day) to include earlier or later
+events. A marker shows the current time when today is visible. The view and
+date live in the URL (`?view=week&date=2026-10-07`), so refreshing or sharing
+the link lands back in the same place.
+
 When link access is enabled, open the UI with the private token in the URL:
 
 ```text
