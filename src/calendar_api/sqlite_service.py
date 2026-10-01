@@ -11,6 +11,7 @@ from .errors import ConflictError, NotFoundError, ValidationError
 from .normalization import normalize_contact
 from .recurrence import OccurrenceSpec, expand_revision
 from .schemas import EventRevisionInput, GroupCreate, GroupUpdate, ReviewInput
+from .security import new_token, token_digest_bytes, token_matches_digest
 
 
 def _now() -> datetime:
@@ -104,6 +105,8 @@ def update_group(
 def _require_active_groups(
     connection: sqlite3.Connection, group_ids: list[UUID]
 ) -> None:
+    if not group_ids:
+        return
     placeholders = ",".join("?" for _ in group_ids)
     count = connection.execute(
         f"SELECT count(*) FROM groups WHERE id IN ({placeholders}) AND is_active = 1",
@@ -188,18 +191,20 @@ def create_event(connection: sqlite3.Connection, payload: EventRevisionInput) ->
     event_id = str(uuid4())
     submitted_at = _timestamp()
     contact = normalize_contact(payload.submitter.channel, payload.submitter.contact)
+    management_token = new_token()
     connection.execute(
         """
         INSERT INTO events (
           id, original_submitter_name, original_submitter_channel,
-          original_submitter_contact, submitted_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?)
+          original_submitter_contact, management_token_hash, submitted_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
         (
             event_id,
             payload.submitter.name,
             payload.submitter.channel,
             contact,
+            token_digest_bytes(management_token),
             submitted_at,
             submitted_at,
         ),
@@ -215,7 +220,51 @@ def create_event(connection: sqlite3.Connection, payload: EventRevisionInput) ->
         "revision_number": 1,
         "approval_status": "pending",
         "submitted_at": submitted_at,
+        "management_token": management_token,
     }
+
+
+def event_management_token_matches(
+    connection: sqlite3.Connection, event_id: UUID, token: str | None
+) -> bool:
+    row = connection.execute(
+        "SELECT management_token_hash FROM events WHERE id = ? AND archived_at IS NULL",
+        (str(event_id),),
+    ).fetchone()
+    return row is not None and token_matches_digest(token, row["management_token_hash"])
+
+
+def get_editable_event(connection: sqlite3.Connection, event_id: UUID) -> dict:
+    row = connection.execute(
+        """
+        SELECT r.id AS revision_id, r.event_id, r.revision_number,
+               r.approval_status, r.title, r.description, r.location_name,
+               r.location_address, r.event_url, r.is_all_day, r.starts_at,
+               r.ends_at, r.start_date, r.end_date, r.timezone,
+               r.recurrence_rule, r.submitted_by_name, r.submitted_by_channel,
+               r.submitted_by_contact, r.submitted_at
+          FROM events e
+          JOIN event_revisions r ON r.id = e.current_revision_id
+         WHERE e.id = ? AND e.archived_at IS NULL
+        """,
+        (str(event_id),),
+    ).fetchone()
+    if row is None:
+        raise NotFoundError("event not found")
+    result = dict(row)
+    result["is_all_day"] = bool(result["is_all_day"])
+    result["groups"] = _groups_for_revision(
+        connection, result["revision_id"], active_only=False
+    )
+    dates = connection.execute(
+        """
+        SELECT local_start, kind FROM event_revision_recurrence_dates
+         WHERE event_revision_id = ? ORDER BY local_start
+        """,
+        (result["revision_id"],),
+    ).fetchall()
+    result["recurrence_dates"] = [dict(item) for item in dates]
+    return result
 
 
 def create_revision(
@@ -234,7 +283,76 @@ def create_revision(
     if event is None or event["archived_at"] is not None:
         raise NotFoundError("event not found")
     if event["approval_status"] == "pending":
-        raise ConflictError("the event already has a pending revision")
+        contact = normalize_contact(
+            payload.submitter.channel, payload.submitter.contact
+        )
+        submitted_at = _timestamp()
+        connection.execute(
+            """
+            UPDATE event_revisions SET
+              title = ?, description = ?, location_name = ?,
+              location_address = ?, event_url = ?, is_all_day = ?,
+              starts_at = ?, ends_at = ?, start_date = ?, end_date = ?,
+              timezone = ?, recurrence_rule = ?, submitted_by_name = ?,
+              submitted_by_channel = ?, submitted_by_contact = ?,
+              submitted_at = ?
+             WHERE id = ?
+            """,
+            (
+                payload.title,
+                payload.description,
+                payload.location_name or None,
+                payload.location_address or None,
+                payload.event_url or None,
+                int(payload.is_all_day),
+                _timestamp(payload.starts_at) if payload.starts_at else None,
+                _timestamp(payload.ends_at) if payload.ends_at else None,
+                payload.start_date.isoformat() if payload.start_date else None,
+                payload.end_date.isoformat() if payload.end_date else None,
+                payload.timezone,
+                payload.recurrence_rule,
+                payload.submitter.name,
+                payload.submitter.channel,
+                contact,
+                submitted_at,
+                event["current_revision_id"],
+            ),
+        )
+        revision_id = event["current_revision_id"]
+        connection.execute(
+            "DELETE FROM event_revision_groups WHERE event_revision_id = ?",
+            (revision_id,),
+        )
+        now = _timestamp()
+        connection.executemany(
+            """
+            INSERT INTO event_revision_groups
+              (event_revision_id, group_id, created_at) VALUES (?, ?, ?)
+            """,
+            [(revision_id, str(group_id), now) for group_id in payload.group_ids],
+        )
+        connection.execute(
+            "DELETE FROM event_revision_recurrence_dates WHERE event_revision_id = ?",
+            (revision_id,),
+        )
+        connection.executemany(
+            """
+            INSERT INTO event_revision_recurrence_dates
+              (event_revision_id, local_start, kind, created_at) VALUES (?, ?, ?, ?)
+            """,
+            [
+                (revision_id, _local_timestamp(item.local_start), item.kind, now)
+                for item in payload.recurrence_dates
+            ],
+        )
+        return {
+            "event_id": str(event_id),
+            "revision_id": revision_id,
+            "revision_number": event["revision_number"],
+            "approval_status": "pending",
+            "submitted_at": submitted_at,
+            "updated_pending_revision": True,
+        }
     revision = _insert_revision(
         connection,
         str(event_id),
@@ -822,10 +940,16 @@ def calendar_occurrences(
           JOIN event_revisions r ON r.id = e.published_revision_id
          WHERE e.archived_at IS NULL AND r.approval_status = 'approved'
            AND o.status = 'scheduled'
-           AND EXISTS (
-             SELECT 1 FROM event_revision_groups visible_rg
-             JOIN groups visible_g ON visible_g.id = visible_rg.group_id
-             WHERE visible_rg.event_revision_id = r.id AND visible_g.is_active = 1
+           AND (
+             NOT EXISTS (
+               SELECT 1 FROM event_revision_groups assigned_rg
+                WHERE assigned_rg.event_revision_id = r.id
+             )
+             OR EXISTS (
+               SELECT 1 FROM event_revision_groups visible_rg
+               JOIN groups visible_g ON visible_g.id = visible_rg.group_id
+               WHERE visible_rg.event_revision_id = r.id AND visible_g.is_active = 1
+             )
            )
            AND ((o.is_all_day = 0 AND o.starts_at < ? AND o.ends_at > ?)
              OR (o.is_all_day = 1 AND o.start_date < ? AND o.end_date > ?))
@@ -859,10 +983,16 @@ def get_published_event(connection: sqlite3.Connection, event_id: UUID) -> dict:
           FROM events e JOIN event_revisions r ON r.id = e.published_revision_id
          WHERE e.id = ? AND e.archived_at IS NULL
            AND r.approval_status = 'approved'
-           AND EXISTS (
-             SELECT 1 FROM event_revision_groups rg
-             JOIN groups g ON g.id = rg.group_id
-             WHERE rg.event_revision_id = r.id AND g.is_active = 1
+           AND (
+             NOT EXISTS (
+               SELECT 1 FROM event_revision_groups assigned_rg
+                WHERE assigned_rg.event_revision_id = r.id
+             )
+             OR EXISTS (
+               SELECT 1 FROM event_revision_groups rg
+               JOIN groups g ON g.id = rg.group_id
+               WHERE rg.event_revision_id = r.id AND g.is_active = 1
+             )
            )
         """,
         (str(event_id),),

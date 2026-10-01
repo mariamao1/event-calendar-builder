@@ -20,9 +20,13 @@
             <span class="brand-kicker">Community calendar</span>
           </span>
         </a>
-        <div class="header-note">
-          <span class="live-dot" aria-hidden="true"></span>
-          Approved community events
+        <div class="header-actions">
+          <div class="header-note">
+            <span class="live-dot" aria-hidden="true"></span>
+            Approved community events
+          </div>
+          <button class="quiet-button" id="admin-button" type="button">Admin sign in</button>
+          <button class="primary-button" id="create-event-button" type="button">Add an event</button>
         </div>
       </header>
 
@@ -140,6 +144,133 @@
           Event website
           <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 13 13.5 6.5M9 6.5h4.5V11M13 14H6V7h3" /></svg>
         </a>
+        <div class="event-detail-actions">
+          <button class="quiet-button" id="edit-event-button" type="button" hidden>Edit event</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="admin-dialog" class="form-dialog" aria-labelledby="admin-dialog-title">
+      <div class="dialog-surface admin-dialog-surface">
+        <div class="dialog-header">
+          <div>
+            <p class="eyebrow">Calendar administration</p>
+            <h2 id="admin-dialog-title">Admin sign in</h2>
+          </div>
+          <button class="icon-close" type="button" data-close="admin-dialog" aria-label="Close admin sign in">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" /></svg>
+          </button>
+        </div>
+        <form id="admin-login-form" class="admin-login-form">
+          <label class="field-label">Username<input id="admin-username" name="username" autocomplete="username" required /></label>
+          <label class="field-label">Password<input id="admin-password" name="password" type="password" autocomplete="current-password" required /></label>
+          <p id="admin-error" class="form-error" role="alert"></p>
+          <button class="primary-button" type="submit">Sign in</button>
+        </form>
+        <div id="admin-signed-in" hidden>
+          <p>You’re signed in as <strong id="admin-name"></strong>. Events you create or edit will publish immediately.</p>
+          <button class="quiet-button" id="admin-logout" type="button">Sign out</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="event-form-dialog" class="form-dialog" aria-labelledby="event-form-title">
+      <div class="dialog-surface event-form-surface">
+        <div class="dialog-header form-dialog-header">
+          <div>
+            <p class="eyebrow" id="event-form-eyebrow">Community submission</p>
+            <h2 id="event-form-title">Add an event</h2>
+            <p id="event-form-intro" class="form-intro">Submissions are reviewed by an admin before they appear on the calendar.</p>
+          </div>
+          <button class="icon-close" type="button" data-close="event-form-dialog" aria-label="Close event form">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" /></svg>
+          </button>
+        </div>
+
+        <form id="event-form" novalidate>
+          <input id="event-form-id" type="hidden" />
+          <div id="event-form-errors" class="form-error error-summary" role="alert" tabindex="-1"></div>
+
+          <fieldset class="form-section">
+            <legend>Event details</legend>
+            <div class="form-section-body">
+              <label class="field-label field-wide"><span class="field-heading">Title <span aria-hidden="true">*</span></span><input id="event-title" maxlength="240" required /></label>
+              <label class="field-label field-wide">Description<textarea id="event-description" maxlength="20000" rows="5"></textarea></label>
+              <div class="field-grid">
+                <label class="field-label">Location name<input id="event-location-name" maxlength="240" /></label>
+                <label class="field-label">Street address<input id="event-location-address" maxlength="500" /></label>
+              </div>
+              <label class="field-label field-wide">Event website<input id="event-url" type="url" maxlength="2000" placeholder="https://…" /></label>
+            </div>
+          </fieldset>
+
+          <fieldset class="form-section">
+            <legend>When</legend>
+            <div class="form-section-body">
+              <label class="check-row"><input id="event-all-day" type="checkbox" /> <span>All-day event</span></label>
+              <div id="timed-fields" class="field-grid">
+                <label class="field-label">Starts<input id="event-starts-at" type="datetime-local" /></label>
+                <label class="field-label">Ends<input id="event-ends-at" type="datetime-local" /></label>
+              </div>
+              <div id="all-day-fields" class="field-grid" hidden>
+                <label class="field-label">First day<input id="event-start-date" type="date" /></label>
+                <label class="field-label">Last day<input id="event-end-date" type="date" /><small>The last day is included.</small></label>
+              </div>
+              <label class="field-label field-wide">Timezone<select id="event-timezone"><option value="UTC">UTC</option></select><small>Times are interpreted in this timezone.</small></label>
+            </div>
+          </fieldset>
+
+          <fieldset class="form-section">
+            <legend>Repeats <span class="optional-label">optional</span></legend>
+            <div class="form-section-body">
+              <label class="field-label field-wide">Recurrence rule<select id="event-recurrence-rule"><option value="">Does not repeat</option><option value="FREQ=DAILY">Daily</option><option value="FREQ=WEEKLY">Weekly</option><option value="FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR">Every weekday</option><option value="FREQ=MONTHLY">Monthly</option><option value="FREQ=YEARLY">Yearly</option></select></label>
+              <div class="recurrence-heading">
+                <span>Included or excluded dates</span>
+                <button id="add-recurrence-date" class="quiet-button" type="button">Add date</button>
+              </div>
+              <div id="recurrence-date-list" class="recurrence-date-list"></div>
+            </div>
+          </fieldset>
+
+          <fieldset class="form-section">
+            <legend>Groups / tags <span class="optional-label">optional</span></legend>
+            <div class="form-section-body compact-section-body">
+              <p class="field-help">Choose any community groups that apply.</p>
+              <div id="event-groups" class="group-options" aria-live="polite"></div>
+            </div>
+          </fieldset>
+
+          <fieldset class="form-section">
+            <legend>Your details</legend>
+            <div class="form-section-body">
+              <div class="field-grid submitter-grid">
+                <label class="field-label"><span class="field-heading">Name <span aria-hidden="true">*</span></span><input id="submitter-name" maxlength="160" required /></label>
+                <label class="field-label">Contact method <select id="submitter-channel"><option value="email">Email</option><option value="sms">SMS</option></select></label>
+              </div>
+              <label class="field-label field-wide"><span id="submitter-contact-label">Email address</span><input id="submitter-contact" maxlength="320" /></label>
+              <p class="privacy-note">If provided, your contact details are used for moderation and are never shown on the public calendar.</p>
+            </div>
+          </fieldset>
+
+          <div class="form-footer">
+            <p id="approval-note">An admin will review this event before it is published.</p>
+            <div class="form-footer-actions">
+              <button class="quiet-button" type="button" data-close="event-form-dialog">Cancel</button>
+              <button class="primary-button" id="event-submit-button" type="submit">Submit for review</button>
+            </div>
+          </div>
+        </form>
+
+        <section id="event-form-success" class="form-success" hidden aria-live="polite">
+          <span class="success-mark" aria-hidden="true">✓</span>
+          <h3 id="event-success-title">Event submitted</h3>
+          <p id="event-success-message"></p>
+          <label class="field-label" id="management-link-wrap">Creator edit link<input id="management-link" readonly /></label>
+          <div class="form-footer-actions">
+            <button class="quiet-button" id="copy-management-link" type="button">Copy edit link</button>
+            <button class="primary-button" id="event-success-close" type="button">Done</button>
+          </div>
+        </section>
       </div>
     </dialog>
 

@@ -7,6 +7,8 @@ from .errors import ValidationError
 
 def normalize_contact(channel: str, value: str) -> str:
     value = value.strip()
+    if not value:
+        return ""
     if channel == "email":
         if value.count("@") != 1 or any(char.isspace() for char in value):
             raise ValidationError("submitter email is invalid")

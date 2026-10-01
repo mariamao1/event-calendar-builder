@@ -62,6 +62,25 @@ class SQLiteDatabase:
         schema = files("calendar_api").joinpath("sqlite_schema.sql").read_text()
         with self._connect() as connection:
             connection.executescript(schema)
+            # sqlite_schema.sql is intentionally idempotent, but CREATE TABLE
+            # cannot add fields to a database created by an older release.
+            # Keep this tiny local migration here so existing calendars gain
+            # creator-managed event edits without being recreated.
+            event_columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(events)")
+            }
+            if "management_token_hash" not in event_columns:
+                connection.execute(
+                    "ALTER TABLE events ADD COLUMN management_token_hash BLOB"
+                )
+            connection.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS
+                  events_management_token_hash_unique
+                  ON events(management_token_hash)
+                 WHERE management_token_hash IS NOT NULL
+                """
+            )
 
     def close(self) -> None:
         pass

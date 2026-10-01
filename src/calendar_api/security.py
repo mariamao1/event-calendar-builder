@@ -58,6 +58,18 @@ def token_digest(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def token_digest_bytes(token: str) -> bytes:
+    """Binary SHA-256 digest used for durable management tokens."""
+    return hashlib.sha256(token.encode("utf-8")).digest()
+
+
+def token_matches_digest(token: str | None, expected: bytes | None) -> bool:
+    """Check a raw token against a stored digest without timing leaks."""
+    if not token or not expected:
+        return False
+    return hmac.compare_digest(token_digest_bytes(token), bytes(expected))
+
+
 def tokens_equal(provided: str | None, expected: str | None) -> bool:
     """Constant-time bearer/link-token comparison that fails closed."""
     if not provided or not expected:

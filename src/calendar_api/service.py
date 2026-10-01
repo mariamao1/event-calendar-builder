@@ -13,6 +13,7 @@ from .errors import ConflictError, NotFoundError, ValidationError
 from .normalization import normalize_contact
 from .recurrence import OccurrenceSpec, expand_revision
 from .schemas import EventRevisionInput, GroupCreate, GroupUpdate, ReviewInput
+from .security import new_token, token_digest_bytes, token_matches_digest
 
 
 def _now() -> datetime:
@@ -75,6 +76,8 @@ def update_group(connection: Connection, group_id: UUID, payload: GroupUpdate) -
 
 
 def _require_active_groups(connection: Connection, group_ids: list[UUID]) -> None:
+    if not group_ids:
+        return
     rows = connection.execute(
         "SELECT id FROM groups WHERE id = ANY(%s) AND is_active", (group_ids,)
     ).fetchall()
@@ -154,15 +157,21 @@ def _insert_revision(
 def create_event(connection: Connection, payload: EventRevisionInput) -> dict:
     _require_active_groups(connection, payload.group_ids)
     contact = normalize_contact(payload.submitter.channel, payload.submitter.contact)
+    management_token = new_token()
     event = connection.execute(
         """
         INSERT INTO events (
           original_submitter_name, original_submitter_channel,
-          original_submitter_contact
-        ) VALUES (%s, %s, %s)
+          original_submitter_contact, management_token_hash
+        ) VALUES (%s, %s, %s, %s)
         RETURNING id, submitted_at
         """,
-        (payload.submitter.name, payload.submitter.channel, contact),
+        (
+            payload.submitter.name,
+            payload.submitter.channel,
+            contact,
+            token_digest_bytes(management_token),
+        ),
     ).fetchone()
     revision = _insert_revision(connection, event["id"], 1, None, payload)
     connection.execute(
@@ -175,7 +184,51 @@ def create_event(connection: Connection, payload: EventRevisionInput) -> dict:
         "revision_number": 1,
         "approval_status": "pending",
         "submitted_at": event["submitted_at"],
+        "management_token": management_token,
     }
+
+
+def event_management_token_matches(
+    connection: Connection, event_id: UUID, token: str | None
+) -> bool:
+    row = connection.execute(
+        "SELECT management_token_hash FROM events WHERE id = %s AND archived_at IS NULL",
+        (event_id,),
+    ).fetchone()
+    return row is not None and token_matches_digest(token, row["management_token_hash"])
+
+
+def get_editable_event(connection: Connection, event_id: UUID) -> dict:
+    row = connection.execute(
+        """
+        SELECT r.id AS revision_id, r.event_id, r.revision_number,
+               r.approval_status, r.title, r.description, r.location_name,
+               r.location_address, r.event_url, r.is_all_day, r.starts_at,
+               r.ends_at, r.start_date, r.end_date, r.timezone,
+               r.recurrence_rule, r.submitted_by_name, r.submitted_by_channel,
+               r.submitted_by_contact, r.submitted_at,
+               (SELECT COALESCE(jsonb_agg(
+                         jsonb_build_object('id', g.id, 'slug', g.slug, 'name', g.name)
+                         ORDER BY g.name, g.id
+                       ), '[]'::jsonb)
+                  FROM event_revision_groups rg
+                  JOIN groups g ON g.id = rg.group_id
+                 WHERE rg.event_revision_id = r.id) AS groups,
+               (SELECT COALESCE(jsonb_agg(
+                         jsonb_build_object('local_start', d.local_start, 'kind', d.kind)
+                         ORDER BY d.local_start
+                       ), '[]'::jsonb)
+                  FROM event_revision_recurrence_dates d
+                 WHERE d.event_revision_id = r.id) AS recurrence_dates
+          FROM events e
+          JOIN event_revisions r ON r.id = e.current_revision_id
+         WHERE e.id = %s AND e.archived_at IS NULL
+        """,
+        (event_id,),
+    ).fetchone()
+    if row is None:
+        raise NotFoundError("event not found")
+    return _as_dict(row)
 
 
 def create_revision(
@@ -196,7 +249,81 @@ def create_revision(
     if event is None or event["archived_at"] is not None:
         raise NotFoundError("event not found")
     if event["approval_status"] == "pending":
-        raise ConflictError("the event already has a pending revision")
+        # A creator may correct a submission that is still waiting in the
+        # review queue. Pending content is intentionally mutable; once it is
+        # reviewed, normal edits create a new immutable audit revision.
+        contact = normalize_contact(
+            payload.submitter.channel, payload.submitter.contact
+        )
+        revision = connection.execute(
+            """
+            UPDATE event_revisions SET
+              title = %(title)s, description = %(description)s,
+              location_name = %(location_name)s,
+              location_address = %(location_address)s,
+              event_url = %(event_url)s, is_all_day = %(is_all_day)s,
+              starts_at = %(starts_at)s, ends_at = %(ends_at)s,
+              start_date = %(start_date)s, end_date = %(end_date)s,
+              timezone = %(timezone)s, recurrence_rule = %(recurrence_rule)s,
+              submitted_by_name = %(submitted_by_name)s,
+              submitted_by_channel = %(submitted_by_channel)s,
+              submitted_by_contact = %(submitted_by_contact)s,
+              submitted_at = now()
+             WHERE id = %(revision_id)s
+            RETURNING *
+            """,
+            {
+                "revision_id": event["current_revision_id"],
+                "title": payload.title,
+                "description": payload.description,
+                "location_name": payload.location_name or None,
+                "location_address": payload.location_address or None,
+                "event_url": payload.event_url or None,
+                "is_all_day": payload.is_all_day,
+                "starts_at": payload.starts_at,
+                "ends_at": payload.ends_at,
+                "start_date": payload.start_date,
+                "end_date": payload.end_date,
+                "timezone": payload.timezone,
+                "recurrence_rule": payload.recurrence_rule,
+                "submitted_by_name": payload.submitter.name,
+                "submitted_by_channel": payload.submitter.channel,
+                "submitted_by_contact": contact,
+            },
+        ).fetchone()
+        connection.execute(
+            "DELETE FROM event_revision_groups WHERE event_revision_id = %s",
+            (revision["id"],),
+        )
+        _execute_many(
+            connection,
+            "INSERT INTO event_revision_groups (event_revision_id, group_id) VALUES (%s, %s)",
+            [(revision["id"], group_id) for group_id in payload.group_ids],
+        )
+        connection.execute(
+            "DELETE FROM event_revision_recurrence_dates WHERE event_revision_id = %s",
+            (revision["id"],),
+        )
+        if payload.recurrence_dates:
+            _execute_many(
+                connection,
+                """
+                INSERT INTO event_revision_recurrence_dates
+                  (event_revision_id, local_start, kind) VALUES (%s, %s, %s)
+                """,
+                [
+                    (revision["id"], item.local_start, item.kind)
+                    for item in payload.recurrence_dates
+                ],
+            )
+        return {
+            "event_id": event_id,
+            "revision_id": revision["id"],
+            "revision_number": revision["revision_number"],
+            "approval_status": "pending",
+            "submitted_at": revision["submitted_at"],
+            "updated_pending_revision": True,
+        }
 
     revision = _insert_revision(
         connection,
@@ -698,10 +825,10 @@ def calendar_occurrences(
         JOIN events e ON e.id = o.event_id
         JOIN event_revisions r ON r.id = e.published_revision_id
         CROSS JOIN LATERAL (
-          SELECT jsonb_agg(
+          SELECT COALESCE(jsonb_agg(
                    jsonb_build_object('id', g.id, 'slug', g.slug, 'name', g.name)
                    ORDER BY g.name, g.id
-                 ) AS groups
+                 ), '[]'::jsonb) AS groups
             FROM event_revision_groups rg
             JOIN groups g ON g.id = rg.group_id
            WHERE rg.event_revision_id = r.id
@@ -710,12 +837,18 @@ def calendar_occurrences(
         WHERE e.archived_at IS NULL
           AND r.approval_status = 'approved'
           AND o.status = 'scheduled'
-          AND EXISTS (
-            SELECT 1
-              FROM event_revision_groups visible_rg
-              JOIN groups visible_g ON visible_g.id = visible_rg.group_id
-             WHERE visible_rg.event_revision_id = r.id
-               AND visible_g.is_active
+          AND (
+            NOT EXISTS (
+              SELECT 1 FROM event_revision_groups assigned_rg
+               WHERE assigned_rg.event_revision_id = r.id
+            )
+            OR EXISTS (
+              SELECT 1
+                FROM event_revision_groups visible_rg
+                JOIN groups visible_g ON visible_g.id = visible_rg.group_id
+               WHERE visible_rg.event_revision_id = r.id
+                 AND visible_g.is_active
+            )
           )
           AND (
             (NOT o.is_all_day AND o.starts_at < %(end_at)s
@@ -759,22 +892,28 @@ def get_published_event(connection: Connection, event_id: UUID) -> dict:
     row = connection.execute(
         """
         SELECT p.*,
-               (SELECT jsonb_agg(
+               (SELECT COALESCE(jsonb_agg(
                          jsonb_build_object('id', g.id, 'slug', g.slug, 'name', g.name)
                          ORDER BY g.name, g.id
-                       )
+                       ), '[]'::jsonb)
                   FROM event_revision_groups rg
                   JOIN groups g ON g.id = rg.group_id
                  WHERE rg.event_revision_id = p.event_revision_id
                    AND g.is_active) AS groups
           FROM published_events p
          WHERE p.event_id = %s
-           AND EXISTS (
-             SELECT 1
-               FROM event_revision_groups visible_rg
-               JOIN groups visible_g ON visible_g.id = visible_rg.group_id
-              WHERE visible_rg.event_revision_id = p.event_revision_id
-                AND visible_g.is_active
+           AND (
+             NOT EXISTS (
+               SELECT 1 FROM event_revision_groups assigned_rg
+                WHERE assigned_rg.event_revision_id = p.event_revision_id
+             )
+             OR EXISTS (
+               SELECT 1
+                 FROM event_revision_groups visible_rg
+                 JOIN groups visible_g ON visible_g.id = visible_rg.group_id
+                WHERE visible_rg.event_revision_id = p.event_revision_id
+                  AND visible_g.is_active
+             )
            )
         """,
         (event_id,),
@@ -796,10 +935,10 @@ def review_queue(
                r.submitted_by_name, r.submitted_by_channel,
                r.submitted_by_contact, r.submitted_at, r.reviewed_at,
                r.reviewed_by, r.review_note,
-               (SELECT jsonb_agg(
+               (SELECT COALESCE(jsonb_agg(
                          jsonb_build_object('id', g.id, 'slug', g.slug, 'name', g.name)
                          ORDER BY g.name, g.id
-                       )
+                       ), '[]'::jsonb)
                   FROM event_revision_groups rg
                   JOIN groups g ON g.id = rg.group_id
                  WHERE rg.event_revision_id = r.id) AS groups
@@ -834,10 +973,10 @@ def get_admin_event(connection: Connection, event_id: UUID) -> dict:
     revisions = connection.execute(
         """
         SELECT r.*,
-               (SELECT jsonb_agg(
+               (SELECT COALESCE(jsonb_agg(
                          jsonb_build_object('id', g.id, 'slug', g.slug, 'name', g.name)
                          ORDER BY g.name, g.id
-                       )
+                       ), '[]'::jsonb)
                   FROM event_revision_groups rg
                   JOIN groups g ON g.id = rg.group_id
                  WHERE rg.event_revision_id = r.id) AS groups,

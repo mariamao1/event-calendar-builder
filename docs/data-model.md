@@ -17,9 +17,11 @@ subscriptions ---> notification_deliveries ---> delivery_items-+
 ## Events, revisions, and approval
 
 `events` is the stable identity and holds the original, accountless submitter's
-name, contact channel, contact value, and submission time. Every content version
-is an `event_revision`; it repeats submitter/editor provenance so the audit trail
-does not depend on a user account.
+name, contact channel, optional contact value, submission time, and a SHA-256
+digest of its 256-bit creator management token. The raw token is returned once
+and proves ownership for later edits. Every content version is an
+`event_revision`; it repeats submitter/editor provenance so the audit trail does
+not depend on a user account.
 
 The event's moderation state is
 `events.current_revision_id -> event_revisions.approval_status`. Group
@@ -155,8 +157,8 @@ application transaction layer must additionally enforce:
 2. Revision numbers are allocated while locking the event row.
 3. A revision cannot change after it leaves `pending`; review is a valid state
    transition, not a content edit.
-4. Every event revision has at least one group, and every active subscription
-   has at least one group.
+4. Every active subscription has at least one group. Event group assignment is
+   optional; an ungrouped event appears only in unfiltered calendar reads.
 5. RRULE/timezone/contact normalization is validated before persistence.
 6. Publication, occurrence reconciliation, version increments, and notification
    outbox inserts are committed atomically.

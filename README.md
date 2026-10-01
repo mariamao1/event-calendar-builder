@@ -2,7 +2,7 @@
 
 The production PostgreSQL data model is defined in:
 
-- [`db/migrations/001_initial_schema.sql`](db/migrations/001_initial_schema.sql) — executable PostgreSQL 15+ schema
+- [`db/migrations/`](db/migrations/) — ordered executable PostgreSQL 15+ migrations
 - [`db/tests/001_initial_schema_smoke.sql`](db/tests/001_initial_schema_smoke.sql) — transactional constraint smoke test
 - [`docs/data-model.md`](docs/data-model.md) — model decisions, invariants, and lifecycle behavior
 
@@ -12,6 +12,8 @@ does not require these commands.
 
 ```sh
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/001_initial_schema.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/002_event_management_tokens.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/003_optional_event_contact.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/tests/001_initial_schema_smoke.sql
 ```
 
@@ -41,6 +43,11 @@ It shows only approved occurrences, renders all-day and cross-date events as
 week-spanning bands, and keeps crowded days usable through a complete day
 dialog. Use the arrows to move one month at a time, **Today** to return to the
 current month, or select the month heading to jump directly to a month/year.
+
+Use **Add an event** to submit every event field, including timing, recurrence,
+location, groups/tags, and submitter contact. Community submissions wait for
+admin approval; the confirmation includes a creator-only edit link. Signed-in
+admins create and edit events with immediate approval.
 
 Use the **Month / Week / Day** switcher to change views. Week and day are
 time grids: timed events are positioned by their start/end times, overlapping

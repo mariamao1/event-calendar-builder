@@ -114,6 +114,7 @@ def create_app(
                 "Content-Type",
                 "X-Admin-Key",
                 "X-Calendar-Token",
+                "X-Event-Management-Token",
                 "Authorization",
             ],
         )
@@ -186,6 +187,21 @@ def create_app(
                 401, "unauthorized", "a valid calendar link token is required"
             )
 
+    def admin_identity(
+        x_admin_key: str | None, authorization: str | None
+    ) -> str | None:
+        bearer: str | None = None
+        if authorization and authorization.lower().startswith("bearer "):
+            bearer = authorization[7:].strip() or None
+        if bearer:
+            username = sessions.validate(bearer)
+            if username is not None:
+                return username
+        expected = settings.admin_api_key
+        if expected and tokens_equal(x_admin_key, expected):
+            return settings.admin_username
+        return None
+
     def require_admin(
         request: Request,
         x_admin_key: Annotated[str | None, Header()] = None,
@@ -197,13 +213,9 @@ def create_app(
         against a salted PBKDF2 hash). The X-Admin-Key service key remains
         accepted so existing operators keep working.
         """
-        bearer: str | None = None
-        if authorization and authorization.lower().startswith("bearer "):
-            bearer = authorization[7:].strip() or None
-        if bearer:
-            username = sessions.validate(bearer)
-            if username is not None:
-                return username
+        identity = admin_identity(x_admin_key, authorization)
+        if identity is not None:
+            return identity
         expected = settings.admin_api_key
         if not expected and not settings.admin_password_hash:
             raise ApiError(
@@ -211,9 +223,27 @@ def create_app(
                 "admin_not_configured",
                 "no admin credential is configured",
             )
-        if expected and tokens_equal(x_admin_key, expected):
-            return settings.admin_username
         raise ApiError(401, "unauthorized", "valid admin credentials are required")
+
+    def require_event_editor(
+        event_id: UUID,
+        management_token: str | None,
+        x_admin_key: str | None,
+        authorization: str | None,
+    ) -> None:
+        identity = admin_identity(x_admin_key, authorization)
+        if identity is not None:
+            return
+        with database.connection() as connection:
+            matches = service.event_management_token_matches(
+                connection, event_id, management_token
+            )
+        if not matches:
+            raise ApiError(
+                401,
+                "unauthorized",
+                "the event creator's management token or admin credentials are required",
+            )
 
     admin = Depends(require_admin)
     link = Depends(require_link)
@@ -332,13 +362,81 @@ def create_app(
             return service.create_event(connection, payload)
 
     @app.post(
+        "/api/v1/admin/events",
+        status_code=status.HTTP_201_CREATED,
+    )
+    def post_admin_event(
+        payload: EventRevisionInput,
+        actor: str = Depends(require_admin),
+    ) -> dict:
+        """Create and publish an admin-authored event in one transaction."""
+        with database.transaction() as connection:
+            created = service.create_event(connection, payload)
+            approved = service.approve_revision(
+                connection,
+                created["event_id"],
+                created["revision_id"],
+                ReviewInput(actor=actor, note="Created and approved by admin"),
+                past_days=settings.materialization_past_days,
+                future_months=settings.materialization_future_months,
+            )
+        return {**created, **approved}
+
+    @app.post(
         "/api/v1/events/{event_id}/revisions",
         status_code=status.HTTP_202_ACCEPTED,
-        dependencies=[admin],
     )
-    def post_revision(event_id: UUID, payload: EventRevisionInput) -> dict:
+    def post_revision(
+        event_id: UUID,
+        payload: EventRevisionInput,
+        x_event_management_token: Annotated[
+            str | None, Header(alias="X-Event-Management-Token")
+        ] = None,
+        x_admin_key: Annotated[str | None, Header()] = None,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> dict:
+        require_event_editor(
+            event_id, x_event_management_token, x_admin_key, authorization
+        )
         with database.transaction() as connection:
             return service.create_revision(connection, event_id, payload)
+
+    @app.post(
+        "/api/v1/admin/events/{event_id}/revisions",
+        status_code=status.HTTP_201_CREATED,
+    )
+    def post_admin_revision(
+        event_id: UUID,
+        payload: EventRevisionInput,
+        actor: str = Depends(require_admin),
+    ) -> dict:
+        """Create and immediately publish an admin-authored edit."""
+        with database.transaction() as connection:
+            created = service.create_revision(connection, event_id, payload)
+            approved = service.approve_revision(
+                connection,
+                event_id,
+                created["revision_id"],
+                ReviewInput(actor=actor, note="Edited and approved by admin"),
+                past_days=settings.materialization_past_days,
+                future_months=settings.materialization_future_months,
+            )
+        return {**created, **approved}
+
+    @app.get("/api/v1/events/{event_id}/manage")
+    def editable_event(
+        event_id: UUID,
+        x_event_management_token: Annotated[
+            str | None, Header(alias="X-Event-Management-Token")
+        ] = None,
+        x_admin_key: Annotated[str | None, Header()] = None,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> dict:
+        require_event_editor(
+            event_id, x_event_management_token, x_admin_key, authorization
+        )
+        with database.connection() as connection:
+            return service.get_editable_event(connection, event_id)
 
     @app.get("/api/v1/events/{event_id}", dependencies=[link])
     def event(event_id: UUID) -> dict:

@@ -39,8 +39,9 @@ Its semantics are:
 - Repeated `group` values use **any-group** matching. No group parameter means
   all active groups. Unknown and inactive slugs return `422`, making frontend
   typos visible.
-- Only scheduled occurrences of approved, published revisions assigned to at
-  least one active group are returned. A pending edit leaves its last approved
+- Only scheduled occurrences of approved, published revisions are returned.
+  Events without a group are included in unfiltered reads; events assigned only
+  to inactive groups remain hidden. A pending edit leaves its last approved
   revision visible; rejected content is never exposed.
 - Responses are ordered by occurrence start. `limit` defaults to 500 (maximum
   2,000), `offset` defaults to zero, and `meta.has_more` signals another page.
@@ -85,6 +86,8 @@ Public routes:
 | `GET` | `/api/v1/calendar` | Published occurrences in a range |
 | `GET` | `/api/v1/events/{event_id}` | One published event |
 | `POST` | `/api/v1/events` | Submit revision 1 for review |
+| `GET` | `/api/v1/events/{event_id}/manage` | Load creator-owned editable content |
+| `POST` | `/api/v1/events/{event_id}/revisions` | Submit a creator-owned edit for review |
 
 Admin routes (require admin authentication, see below):
 
@@ -96,18 +99,22 @@ Admin routes (require admin authentication, see below):
 | `PATCH` | `/api/v1/admin/groups/{group_id}` | Rename, describe, activate/deactivate |
 | `GET` | `/api/v1/admin/events?status=pending` | Moderation queue |
 | `GET` | `/api/v1/admin/events/{event_id}` | Audit view with all revisions |
-| `POST` | `/api/v1/events/{event_id}/revisions` | Submit an edit as a new revision |
+| `POST` | `/api/v1/admin/events` | Create and immediately approve an event |
+| `POST` | `/api/v1/admin/events/{event_id}/revisions` | Edit and immediately approve an event |
 | `POST` | `/api/v1/admin/events/{event_id}/revisions/{revision_id}/approve` | Publish atomically |
 | `POST` | `/api/v1/admin/events/{event_id}/revisions/{revision_id}/reject` | Reject while retaining prior publication |
 | `POST` | `/api/v1/admin/events/{event_id}/revoke` | Unpublish and cancel future occurrences |
 
-Edits are intentionally admin-only until an event-specific, accountless
-management-token design is added. Publicly accepting an event ID alone would
-let anyone create a blocking pending revision.
+Creating an event returns a one-time `management_token`. Creator reads and edits
+send it in `X-Event-Management-Token`; only its SHA-256 digest is stored. The
+browser packages the raw token in the URL fragment of its creator edit link, so
+it is not sent in HTTP requests or server logs. A pending submission can be
+corrected in place. Once reviewed, every edit becomes a new pending revision,
+leaving the last approved revision visible until the edit is approved.
 
 ## Access model
 
-Two modes, both enforced server-side:
+Three modes, all enforced server-side:
 
 - **Link mode (no account).** The calendar is private but reachable by anyone
   holding its link: viewing groups, the calendar, published events, and
@@ -119,6 +126,11 @@ Two modes, both enforced server-side:
   comparison. When `CALENDAR_ACCESS_TOKEN` is unset (local development),
   public routes stay open and the server logs a warning; set it in
   production. Missing or wrong tokens return `401`.
+- **Creator mode (event-specific capability).** The event management token can
+  load and edit only its event. It does not grant calendar-wide or moderation
+  access. Losing the token does not expose the event; an administrator can
+  still edit it. Raw management tokens are returned only at creation time and
+  are never persisted.
 - **Admin mode (real authentication).** Approving, rejecting, revoking, group
   management, and revision edits require authentication: either a session
   token from `POST /api/v1/admin/login` (username from `ADMIN_USERNAME`,

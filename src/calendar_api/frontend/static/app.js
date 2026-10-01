@@ -965,6 +965,12 @@ function openEventDialog(event) {
   }
   link.hidden = !safeUrl;
   if (safeUrl) link.href = safeUrl;
+  const editButton = document.querySelector("#edit-event-button");
+  editButton.hidden = !(isAdminSignedIn() || creatorToken(event.event_id));
+  editButton.onclick = () => {
+    eventDialog.close();
+    openEditEventForm(event.event_id);
+  };
   eventDialog.showModal();
 }
 
@@ -1006,6 +1012,603 @@ function jumpYear(offset) {
   renderMonthJump();
 }
 
+const eventFormDialog = document.querySelector("#event-form-dialog");
+const eventForm = document.querySelector("#event-form");
+const eventFormSuccess = document.querySelector("#event-form-success");
+const adminDialog = document.querySelector("#admin-dialog");
+let eventFormMode = { eventId: null, managementToken: null };
+let availableGroups = [];
+
+function safeSessionGet(key) {
+  try {
+    return window.sessionStorage.getItem(key);
+  } catch (_) {
+    return null;
+  }
+}
+
+function safeSessionSet(key, value) {
+  try {
+    window.sessionStorage.setItem(key, value);
+  } catch (_) {
+    // Storage can be unavailable in privacy modes; the current form still works.
+  }
+}
+
+function safeSessionRemove(key) {
+  try {
+    window.sessionStorage.removeItem(key);
+  } catch (_) {
+    // Nothing else is needed when storage is unavailable.
+  }
+}
+
+function adminToken() {
+  return safeSessionGet("calendar-admin-token");
+}
+
+function isAdminSignedIn() {
+  return Boolean(adminToken());
+}
+
+function creatorToken(eventId) {
+  return safeSessionGet(`event-management:${eventId}`);
+}
+
+function rememberCreatorToken(eventId, token) {
+  if (eventId && token) safeSessionSet(`event-management:${eventId}`, token);
+}
+
+function authenticatedHeaders(managementToken = null) {
+  const headers = { Accept: "application/json" };
+  if (adminToken()) headers.Authorization = `Bearer ${adminToken()}`;
+  else if (managementToken) headers["X-Event-Management-Token"] = managementToken;
+  return headers;
+}
+
+function urlWithAccessToken(path) {
+  const url = new URL(path, window.location.origin);
+  const token = accessToken();
+  if (token) url.searchParams.set("token", token);
+  return `${url.pathname}${url.search}`;
+}
+
+function apiErrorMessage(body, fallback) {
+  if (body?.error?.message) return body.error.message;
+  if (Array.isArray(body?.detail)) {
+    return body.detail.map((item) => item.msg || "Invalid value").join("; ");
+  }
+  return fallback;
+}
+
+async function jsonRequest(path, options = {}) {
+  const response = await fetch(path, options);
+  const body = await response.json().catch(() => null);
+  if (!response.ok) {
+    const error = new Error(apiErrorMessage(body, `Request failed (${response.status})`));
+    error.status = response.status;
+    throw error;
+  }
+  return body;
+}
+
+function addIsoDays(value, days) {
+  const parsed = dateFromKey(value);
+  return dateKey(addDays(parsed, days));
+}
+
+function timezoneIsValid(value) {
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: value }).format();
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function timezoneOptions(selected) {
+  const fallback = [
+    "UTC",
+    "America/New_York",
+    "America/Chicago",
+    "America/Denver",
+    "America/Los_Angeles",
+    "Europe/London",
+    "Europe/Paris",
+    "Asia/Tokyo",
+    "Australia/Sydney",
+  ];
+  let names = fallback;
+  try {
+    if (typeof Intl.supportedValuesOf === "function") {
+      names = Intl.supportedValuesOf("timeZone");
+    }
+  } catch (_) {
+    names = fallback;
+  }
+  names = [...new Set(["UTC", state.timezone, selected, ...names].filter(Boolean))]
+    .sort((left, right) => left.localeCompare(right));
+  const select = document.querySelector("#event-timezone");
+  select.replaceChildren(...names.map((name) => {
+    const option = document.createElement("option");
+    option.value = name;
+    option.textContent = name.replaceAll("_", " ");
+    return option;
+  }));
+  select.value = selected || state.timezone || "UTC";
+}
+
+function setRecurrenceRule(rule) {
+  const select = document.querySelector("#event-recurrence-rule");
+  const value = rule || "";
+  for (const option of select.querySelectorAll("option[data-custom]")) option.remove();
+  if (value && ![...select.options].some((option) => option.value === value)) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = "Current custom schedule";
+    option.dataset.custom = "true";
+    select.append(option);
+  }
+  select.value = value;
+}
+
+function zonedLocalToIso(value, timezone) {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value)) {
+    throw new Error("Start and end must include a date and time.");
+  }
+  const [day, clock] = value.split("T");
+  const [year, month, date] = day.split("-").map(Number);
+  const [hour, minute] = clock.split(":").map(Number);
+  const wallTimeAsUtc = Date.UTC(year, month - 1, date, hour, minute);
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  });
+  const zoneParts = Object.fromEntries(
+    formatter.formatToParts(new Date(wallTimeAsUtc))
+      .filter((item) => item.type !== "literal")
+      .map((item) => [item.type, Number(item.value)])
+  );
+  const represented = Date.UTC(
+    zoneParts.year,
+    zoneParts.month - 1,
+    zoneParts.day,
+    zoneParts.hour,
+    zoneParts.minute,
+    zoneParts.second
+  );
+  let instant = wallTimeAsUtc - (represented - wallTimeAsUtc);
+
+  // One refinement handles offsets on the other side of a DST transition.
+  const refinedParts = Object.fromEntries(
+    formatter.formatToParts(new Date(instant))
+      .filter((item) => item.type !== "literal")
+      .map((item) => [item.type, Number(item.value)])
+  );
+  const refined = Date.UTC(
+    refinedParts.year,
+    refinedParts.month - 1,
+    refinedParts.day,
+    refinedParts.hour,
+    refinedParts.minute,
+    refinedParts.second
+  );
+  instant -= refined - wallTimeAsUtc;
+
+  const check = Object.fromEntries(
+    formatter.formatToParts(new Date(instant))
+      .filter((item) => item.type !== "literal")
+      .map((item) => [item.type, String(item.value).padStart(2, "0")])
+  );
+  const roundTrip = `${check.year}-${check.month}-${check.day}T${check.hour}:${check.minute}`;
+  if (roundTrip !== value) {
+    throw new Error(`${value} does not exist in ${timezone} because of a clock change.`);
+  }
+  return new Date(instant).toISOString();
+}
+
+function isoToZonedInput(value, timezone) {
+  if (!value) return "";
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(new Date(value))
+      .filter((item) => item.type !== "literal")
+      .map((item) => [item.type, item.value])
+  );
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
+}
+
+function setEventFormError(message) {
+  const summary = document.querySelector("#event-form-errors");
+  summary.textContent = message || "";
+  if (message) summary.focus();
+}
+
+function syncTimingFields() {
+  const allDay = document.querySelector("#event-all-day").checked;
+  document.querySelector("#timed-fields").hidden = allDay;
+  document.querySelector("#all-day-fields").hidden = !allDay;
+  for (const row of document.querySelectorAll(".recurrence-date-row")) {
+    const input = row.querySelector("input");
+    const original = input.value;
+    input.type = allDay ? "date" : "datetime-local";
+    if (allDay && original) input.value = original.slice(0, 10);
+    if (!allDay && original && !original.includes("T")) input.value = `${original}T09:00`;
+  }
+}
+
+function addRecurrenceDate(value = "", kind = "include") {
+  const row = document.createElement("div");
+  row.className = "recurrence-date-row";
+  const dateInput = document.createElement("input");
+  dateInput.type = document.querySelector("#event-all-day").checked ? "date" : "datetime-local";
+  dateInput.setAttribute("aria-label", "Recurrence date");
+  dateInput.value = value ? value.slice(0, dateInput.type === "date" ? 10 : 16) : "";
+  const kindInput = document.createElement("select");
+  kindInput.setAttribute("aria-label", "Include or exclude date");
+  kindInput.innerHTML = '<option value="include">Include</option><option value="exclude">Exclude</option>';
+  kindInput.value = kind;
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "remove-date";
+  remove.setAttribute("aria-label", "Remove recurrence date");
+  remove.textContent = "×";
+  remove.addEventListener("click", () => row.remove());
+  row.append(dateInput, kindInput, remove);
+  document.querySelector("#recurrence-date-list").append(row);
+}
+
+async function loadEventGroups(selectedIds = []) {
+  const container = document.querySelector("#event-groups");
+  const showState = (message, isError = false) => {
+    const stateMessage = document.createElement("p");
+    stateMessage.className = `group-options-state${isError ? " is-error" : ""}`;
+    stateMessage.textContent = message;
+    container.replaceChildren(stateMessage);
+  };
+  showState("Loading groups…");
+  try {
+    const body = await jsonRequest(urlWithAccessToken("/api/v1/groups"), {
+      headers: { Accept: "application/json" },
+    });
+    availableGroups = body.items;
+    const selected = new Set(selectedIds.map(String));
+    const options = availableGroups.map((group) => {
+      const label = document.createElement("label");
+      label.className = "group-option";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.value = group.id;
+      input.checked = selected.has(String(group.id));
+      const text = document.createElement("span");
+      text.textContent = group.name;
+      label.append(input, text);
+      return label;
+    });
+    if (options.length) container.replaceChildren(...options);
+    else showState("No groups are available yet.");
+  } catch (error) {
+    showState(error.message, true);
+  }
+}
+
+function setDefaultEventTimes() {
+  const tomorrow = new Date(Date.now() + DAY_MS);
+  const localDay = [
+    tomorrow.getFullYear(),
+    String(tomorrow.getMonth() + 1).padStart(2, "0"),
+    String(tomorrow.getDate()).padStart(2, "0"),
+  ].join("-");
+  document.querySelector("#event-starts-at").value = `${localDay}T18:00`;
+  document.querySelector("#event-ends-at").value = `${localDay}T19:00`;
+  document.querySelector("#event-start-date").value = localDay;
+  document.querySelector("#event-end-date").value = localDay;
+}
+
+function resetEventForm() {
+  eventForm.reset();
+  document.querySelector("#event-form-id").value = "";
+  document.querySelector("#recurrence-date-list").replaceChildren();
+  timezoneOptions(state.timezone);
+  setRecurrenceRule("");
+  document.querySelector("#submitter-channel").value = "email";
+  updateSubmitterContactType();
+  document.querySelector("#copy-management-link").textContent = "Copy edit link";
+  setDefaultEventTimes();
+  syncTimingFields();
+  setEventFormError("");
+  eventForm.hidden = false;
+  eventFormSuccess.hidden = true;
+}
+
+function updateEventFormMode() {
+  const editing = Boolean(eventFormMode.eventId);
+  const admin = isAdminSignedIn();
+  document.querySelector("#event-form-title").textContent = editing ? "Edit event" : "Add an event";
+  document.querySelector("#event-form-eyebrow").textContent = admin ? "Admin event editor" : "Community submission";
+  document.querySelector("#event-form-intro").textContent = admin
+    ? "As an admin, this event will be approved and published when you save it."
+    : "Submissions and edits are reviewed by an admin before they appear on the calendar.";
+  document.querySelector("#approval-note").textContent = admin
+    ? "This admin-authored event will publish immediately."
+    : "An admin will review this event before it is published.";
+  document.querySelector("#event-submit-button").textContent = admin
+    ? (editing ? "Save and publish" : "Publish event")
+    : (editing ? "Submit edit for review" : "Submit for review");
+}
+
+async function openCreateEventForm() {
+  eventFormMode = { eventId: null, managementToken: null };
+  resetEventForm();
+  updateEventFormMode();
+  eventFormDialog.showModal();
+  await loadEventGroups();
+}
+
+function populateEventForm(event) {
+  document.querySelector("#event-form-id").value = event.event_id;
+  document.querySelector("#event-title").value = event.title || "";
+  document.querySelector("#event-description").value = event.description || "";
+  document.querySelector("#event-location-name").value = event.location_name || "";
+  document.querySelector("#event-location-address").value = event.location_address || "";
+  document.querySelector("#event-url").value = event.event_url || "";
+  document.querySelector("#event-all-day").checked = event.is_all_day;
+  timezoneOptions(event.timezone || state.timezone);
+  if (event.is_all_day) {
+    document.querySelector("#event-start-date").value = event.start_date;
+    document.querySelector("#event-end-date").value = addIsoDays(event.end_date, -1);
+  } else {
+    document.querySelector("#event-starts-at").value = isoToZonedInput(event.starts_at, event.timezone);
+    document.querySelector("#event-ends-at").value = isoToZonedInput(event.ends_at, event.timezone);
+  }
+  setRecurrenceRule(event.recurrence_rule);
+  document.querySelector("#submitter-name").value = event.submitted_by_name || "";
+  document.querySelector("#submitter-channel").value = event.submitted_by_channel || "email";
+  updateSubmitterContactType();
+  document.querySelector("#submitter-contact").value = event.submitted_by_contact || "";
+  syncTimingFields();
+  document.querySelector("#recurrence-date-list").replaceChildren();
+  for (const item of event.recurrence_dates || []) addRecurrenceDate(item.local_start, item.kind);
+}
+
+async function openEditEventForm(eventId, suppliedToken = null) {
+  const managementToken = suppliedToken || creatorToken(eventId);
+  eventFormMode = { eventId, managementToken };
+  resetEventForm();
+  updateEventFormMode();
+  eventFormDialog.showModal();
+  try {
+    const event = await jsonRequest(`/api/v1/events/${eventId}/manage`, {
+      headers: authenticatedHeaders(managementToken),
+    });
+    populateEventForm(event);
+    await loadEventGroups((event.groups || []).map((group) => group.id));
+  } catch (error) {
+    setEventFormError(error.message);
+  }
+}
+
+function collectRecurrenceDates(allDay) {
+  const result = [];
+  for (const row of document.querySelectorAll(".recurrence-date-row")) {
+    const value = row.querySelector("input").value;
+    if (!value) continue;
+    result.push({
+      local_start: allDay ? `${value}T00:00:00` : `${value}:00`,
+      kind: row.querySelector("select").value,
+    });
+  }
+  return result;
+}
+
+function buildEventPayload() {
+  const title = document.querySelector("#event-title").value.trim();
+  const timezone = document.querySelector("#event-timezone").value.trim();
+  const allDay = document.querySelector("#event-all-day").checked;
+  const groupIds = [...document.querySelectorAll("#event-groups input:checked")]
+    .map((input) => input.value);
+  const submitterName = document.querySelector("#submitter-name").value.trim();
+  const submitterContact = document.querySelector("#submitter-contact").value.trim();
+  if (!title) throw new Error("Title is required.");
+  if (!timezone || !timezoneIsValid(timezone)) throw new Error("Enter a valid IANA timezone.");
+  if (!submitterName) throw new Error("Your name is required.");
+
+  const payload = {
+    title,
+    description: document.querySelector("#event-description").value,
+    location_name: document.querySelector("#event-location-name").value.trim() || null,
+    location_address: document.querySelector("#event-location-address").value.trim() || null,
+    event_url: document.querySelector("#event-url").value.trim() || null,
+    is_all_day: allDay,
+    timezone,
+    recurrence_rule: document.querySelector("#event-recurrence-rule").value.trim() || null,
+    recurrence_dates: collectRecurrenceDates(allDay),
+    group_ids: groupIds,
+    submitter: {
+      name: submitterName,
+      channel: document.querySelector("#submitter-channel").value,
+      contact: submitterContact,
+    },
+  };
+
+  if (payload.event_url) {
+    let url;
+    try {
+      url = new URL(payload.event_url);
+    } catch (_) {
+      throw new Error("Event website must be a complete http(s) URL.");
+    }
+    if (!["http:", "https:"].includes(url.protocol)) {
+      throw new Error("Event website must be a complete http(s) URL.");
+    }
+  }
+
+  if (allDay) {
+    const start = document.querySelector("#event-start-date").value;
+    const lastDay = document.querySelector("#event-end-date").value;
+    if (!start || !lastDay) throw new Error("First and last day are required.");
+    if (lastDay < start) throw new Error("Last day cannot be before the first day.");
+    const duration = (dateFromKey(lastDay) - dateFromKey(start)) / DAY_MS + 1;
+    if (duration > 366) throw new Error("All-day events cannot last more than 366 days.");
+    payload.start_date = start;
+    payload.end_date = addIsoDays(lastDay, 1);
+  } else {
+    const starts = document.querySelector("#event-starts-at").value;
+    const ends = document.querySelector("#event-ends-at").value;
+    payload.starts_at = zonedLocalToIso(starts, timezone);
+    payload.ends_at = zonedLocalToIso(ends, timezone);
+    const duration = Date.parse(payload.ends_at) - Date.parse(payload.starts_at);
+    if (duration <= 0) throw new Error("End must be after start.");
+    if (duration > 7 * DAY_MS) throw new Error("Timed events cannot last more than 7 days.");
+  }
+  return payload;
+}
+
+function managementLink(eventId, token) {
+  const url = new URL(window.location.href);
+  url.searchParams.delete("view");
+  url.searchParams.delete("date");
+  url.hash = `manage=${eventId}.${token}`;
+  return url.href;
+}
+
+function showEventSuccess(result, token) {
+  const approved = result.approval_status === "approved";
+  document.querySelector("#event-success-title").textContent = approved ? "Event published" : "Event submitted";
+  document.querySelector("#event-success-message").textContent = approved
+    ? "The event is approved and now appears on the calendar."
+    : "The event is awaiting admin approval. Approved events will appear on the calendar.";
+  const linkWrap = document.querySelector("#management-link-wrap");
+  linkWrap.hidden = !token;
+  if (token) document.querySelector("#management-link").value = managementLink(result.event_id, token);
+  eventForm.hidden = true;
+  eventFormSuccess.hidden = false;
+}
+
+async function submitEventForm(event) {
+  event.preventDefault();
+  setEventFormError("");
+  const submit = document.querySelector("#event-submit-button");
+  try {
+    const payload = buildEventPayload();
+    const editing = Boolean(eventFormMode.eventId);
+    const admin = isAdminSignedIn();
+    let path;
+    if (admin) {
+      path = editing
+        ? `/api/v1/admin/events/${eventFormMode.eventId}/revisions`
+        : "/api/v1/admin/events";
+    } else {
+      path = editing
+        ? `/api/v1/events/${eventFormMode.eventId}/revisions`
+        : urlWithAccessToken("/api/v1/events");
+    }
+    submit.disabled = true;
+    submit.textContent = "Saving…";
+    const headers = authenticatedHeaders(eventFormMode.managementToken);
+    headers["Content-Type"] = "application/json";
+    const result = await jsonRequest(path, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+    });
+    const token = result.management_token || eventFormMode.managementToken;
+    rememberCreatorToken(result.event_id, token);
+    showEventSuccess(result, token);
+    if (admin) loadMonth();
+  } catch (error) {
+    if (error.status === 401 && isAdminSignedIn()) {
+      safeSessionRemove("calendar-admin-token");
+      safeSessionRemove("calendar-admin-name");
+      updateAdminUi();
+    }
+    setEventFormError(error.message);
+  } finally {
+    submit.disabled = false;
+    updateEventFormMode();
+  }
+}
+
+function updateSubmitterContactType() {
+  const sms = document.querySelector("#submitter-channel").value === "sms";
+  const input = document.querySelector("#submitter-contact");
+  document.querySelector("#submitter-contact-label").textContent = sms ? "Mobile number" : "Email address";
+  input.type = sms ? "tel" : "email";
+  input.placeholder = sms ? "+12125550123" : "name@example.org";
+}
+
+function updateAdminUi() {
+  const signedIn = isAdminSignedIn();
+  const name = safeSessionGet("calendar-admin-name") || "admin";
+  document.querySelector("#admin-button").textContent = signedIn ? `Admin: ${name}` : "Admin sign in";
+  document.querySelector("#admin-login-form").hidden = signedIn;
+  document.querySelector("#admin-signed-in").hidden = !signedIn;
+  document.querySelector("#admin-name").textContent = name;
+}
+
+async function adminLogin(event) {
+  event.preventDefault();
+  const error = document.querySelector("#admin-error");
+  error.textContent = "";
+  try {
+    const result = await jsonRequest("/api/v1/admin/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({
+        username: document.querySelector("#admin-username").value,
+        password: document.querySelector("#admin-password").value,
+      }),
+    });
+    safeSessionSet("calendar-admin-token", result.token);
+    safeSessionSet("calendar-admin-name", result.username);
+    document.querySelector("#admin-password").value = "";
+    updateAdminUi();
+  } catch (loginError) {
+    error.textContent = loginError.message;
+  }
+}
+
+async function adminLogout() {
+  const token = adminToken();
+  if (token) {
+    await fetch("/api/v1/admin/logout", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    }).catch(() => null);
+  }
+  safeSessionRemove("calendar-admin-token");
+  safeSessionRemove("calendar-admin-name");
+  updateAdminUi();
+}
+
+function consumeManagementHash() {
+  const match = window.location.hash.match(/^#manage=([0-9a-f-]{36})\.([A-Za-z0-9_-]+)$/i);
+  if (!match) return null;
+  const [, eventId, token] = match;
+  rememberCreatorToken(eventId, token);
+  try {
+    const url = new URL(window.location.href);
+    url.hash = "";
+    window.history.replaceState(null, "", url);
+  } catch (_) {
+    // Keeping the fragment is safe; fragments are not sent to the server.
+  }
+  return { eventId, token };
+}
+
 function bindControls() {
   const token = accessToken();
   if (token) document.querySelector(".brand").href = `/?token=${encodeURIComponent(token)}`;
@@ -1028,6 +1631,27 @@ function bindControls() {
   });
   document.querySelector("#jump-prev-year").addEventListener("click", () => jumpYear(-1));
   document.querySelector("#jump-next-year").addEventListener("click", () => jumpYear(1));
+  document.querySelector("#create-event-button").addEventListener("click", openCreateEventForm);
+  document.querySelector("#event-all-day").addEventListener("change", syncTimingFields);
+  document.querySelector("#add-recurrence-date").addEventListener("click", () => addRecurrenceDate());
+  document.querySelector("#submitter-channel").addEventListener("change", updateSubmitterContactType);
+  eventForm.addEventListener("submit", submitEventForm);
+  document.querySelector("#event-success-close").addEventListener("click", () => eventFormDialog.close());
+  document.querySelector("#copy-management-link").addEventListener("click", async () => {
+    const input = document.querySelector("#management-link");
+    try {
+      await navigator.clipboard.writeText(input.value);
+      document.querySelector("#copy-management-link").textContent = "Copied";
+    } catch (_) {
+      input.select();
+    }
+  });
+  document.querySelector("#admin-button").addEventListener("click", () => {
+    updateAdminUi();
+    adminDialog.showModal();
+  });
+  document.querySelector("#admin-login-form").addEventListener("submit", adminLogin);
+  document.querySelector("#admin-logout").addEventListener("click", adminLogout);
   document.querySelectorAll("[data-close]").forEach((button) => {
     button.addEventListener("click", () => document.querySelector(`#${button.dataset.close}`).close());
   });
@@ -1043,6 +1667,11 @@ function bindControls() {
   });
 }
 
+const managementRequest = consumeManagementHash();
 bindControls();
+updateAdminUi();
 renderCalendar();
 loadMonth();
+if (managementRequest) {
+  openEditEventForm(managementRequest.eventId, managementRequest.token);
+}

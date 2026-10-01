@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from typing import Annotated, Literal
 from urllib.parse import urlparse
 from uuid import UUID
@@ -18,6 +18,12 @@ from pydantic import (
 )
 
 NonBlank = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+# These limits reject accidental year/decade-long ranges while still allowing
+# festivals, retreats, and long-running all-day listings. Recurrence describes
+# how often an event repeats; it should not be encoded as one enormous event.
+MAX_TIMED_EVENT_DURATION = timedelta(days=7)
+MAX_ALL_DAY_EVENT_DURATION = timedelta(days=366)
 
 
 def _timezone(value: str) -> str:
@@ -69,7 +75,9 @@ class GroupUpdate(StrictModel):
 class Submitter(StrictModel):
     name: Annotated[NonBlank, StringConstraints(max_length=160)]
     channel: Literal["email", "sms"]
-    contact: Annotated[NonBlank, StringConstraints(max_length=320)]
+    contact: Annotated[
+        str, StringConstraints(strip_whitespace=True, max_length=320)
+    ] = ""
 
 
 class RecurrenceDate(StrictModel):
@@ -108,7 +116,7 @@ class EventRevisionInput(StrictModel):
         Annotated[str, StringConstraints(strip_whitespace=True, max_length=2000)] | None
     ) = None
     recurrence_dates: list[RecurrenceDate] = Field(default_factory=list, max_length=500)
-    group_ids: list[UUID] = Field(min_length=1, max_length=100)
+    group_ids: list[UUID] = Field(default_factory=list, max_length=100)
     submitter: Submitter
 
     @field_validator("group_ids")
@@ -149,6 +157,8 @@ class EventRevisionInput(StrictModel):
                 raise ValueError("all-day events cannot have starts_at or ends_at")
             if self.end_date <= self.start_date:
                 raise ValueError("end_date must be after start_date (exclusive)")
+            if self.end_date - self.start_date > MAX_ALL_DAY_EVENT_DURATION:
+                raise ValueError("all-day event duration cannot exceed 366 days")
         else:
             if self.starts_at is None or self.ends_at is None:
                 raise ValueError("timed events require starts_at and ends_at")
@@ -158,6 +168,8 @@ class EventRevisionInput(StrictModel):
                 raise ValueError("starts_at and ends_at must include UTC offsets")
             if self.ends_at <= self.starts_at:
                 raise ValueError("ends_at must be after starts_at")
+            if self.ends_at - self.starts_at > MAX_TIMED_EVENT_DURATION:
+                raise ValueError("timed event duration cannot exceed 7 days")
 
         recurrence_ids = [item.local_start for item in self.recurrence_dates]
         if len(set(recurrence_ids)) != len(recurrence_ids):

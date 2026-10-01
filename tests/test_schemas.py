@@ -30,6 +30,15 @@ def test_timing_shape_rejects_mixed_all_day_and_timed_fields() -> None:
         EventRevisionInput.model_validate(payload)
 
 
+def test_only_title_and_submitter_name_need_user_supplied_text() -> None:
+    payload = _base_payload()
+    payload["group_ids"] = []
+    payload["submitter"] = {"name": "Casey", "channel": "email"}
+    parsed = EventRevisionInput.model_validate(payload)
+    assert parsed.group_ids == []
+    assert parsed.submitter.contact == ""
+
+
 def test_rrule_is_normalized_and_cannot_smuggle_dtstart() -> None:
     payload = _base_payload()
     payload["recurrence_rule"] = "rrule:freq=weekly;byday=mo"
@@ -46,6 +55,28 @@ def test_end_date_is_exclusive_and_must_follow_start() -> None:
     payload["end_date"] = date(2026, 10, 10)
     with pytest.raises(ValidationError, match="exclusive"):
         EventRevisionInput.model_validate(payload)
+
+
+def test_implausibly_long_durations_are_rejected() -> None:
+    all_day = _base_payload()
+    all_day["end_date"] = "2027-10-12"
+    with pytest.raises(ValidationError, match="cannot exceed 366 days"):
+        EventRevisionInput.model_validate(all_day)
+
+    zone = ZoneInfo("America/New_York")
+    start = datetime(2026, 10, 10, 9, tzinfo=zone)
+    timed = _base_payload()
+    timed.update(
+        {
+            "is_all_day": False,
+            "start_date": None,
+            "end_date": None,
+            "starts_at": start.isoformat(),
+            "ends_at": (start + timedelta(days=8)).isoformat(),
+        }
+    )
+    with pytest.raises(ValidationError, match="cannot exceed 7 days"):
+        EventRevisionInput.model_validate(timed)
 
 
 def test_until_matches_dtstart_value_type() -> None:

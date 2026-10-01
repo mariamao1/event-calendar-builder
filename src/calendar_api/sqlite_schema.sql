@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS events (
   original_submitter_channel TEXT NOT NULL
     CHECK (original_submitter_channel IN ('email', 'sms')),
   original_submitter_contact TEXT NOT NULL,
+  management_token_hash BLOB
+    CHECK (management_token_hash IS NULL OR length(management_token_hash) = 32),
   submitted_at TEXT NOT NULL,
   archived_at TEXT,
   updated_at TEXT NOT NULL,
