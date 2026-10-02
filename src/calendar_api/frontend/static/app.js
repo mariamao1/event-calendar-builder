@@ -1528,7 +1528,10 @@ async function submitEventForm(event) {
     const token = result.management_token || eventFormMode.managementToken;
     rememberCreatorToken(result.event_id, token);
     showEventSuccess(result, token);
-    if (admin) loadMonth();
+    if (admin) {
+      loadMonth();
+      loadReviewQueue();
+    }
   } catch (error) {
     if (error.status === 401 && isAdminSignedIn()) {
       safeSessionRemove("calendar-admin-token");
@@ -1557,6 +1560,14 @@ function updateAdminUi() {
   document.querySelector("#admin-login-form").hidden = signedIn;
   document.querySelector("#admin-signed-in").hidden = !signedIn;
   document.querySelector("#admin-name").textContent = name;
+  document.querySelector("#review-queue-button").hidden = !signedIn;
+  if (signedIn) {
+    loadReviewQueue();
+  } else {
+    const count = document.querySelector("#review-queue-count");
+    count.hidden = true;
+    count.textContent = "";
+  }
 }
 
 async function adminLogin(event) {
@@ -1592,6 +1603,258 @@ async function adminLogout() {
   safeSessionRemove("calendar-admin-token");
   safeSessionRemove("calendar-admin-name");
   updateAdminUi();
+}
+
+const reviewQueueDialog = document.querySelector("#review-queue-dialog");
+const reviewDetailDialog = document.querySelector("#review-detail-dialog");
+let reviewDetailSelection = { eventId: null, revisionId: null };
+
+function adminActor() {
+  return safeSessionGet("calendar-admin-name") || "admin";
+}
+
+function signOutAfterAuthFailure(message) {
+  safeSessionRemove("calendar-admin-token");
+  safeSessionRemove("calendar-admin-name");
+  updateAdminUi();
+  return message;
+}
+
+function updateReviewQueueCount(count) {
+  const badge = document.querySelector("#review-queue-count");
+  badge.hidden = count <= 0;
+  badge.textContent = count > 0 ? String(count) : "";
+}
+
+function reviewTimingText(item) {
+  if (item.is_all_day) {
+    return `${item.start_date} – ${item.end_date} · All day`;
+  }
+  if (item.starts_at && item.ends_at) {
+    return `${formatTime(item.starts_at)}–${formatTime(item.ends_at)}`;
+  }
+  return "Timing to be confirmed";
+}
+
+function renderReviewQueue(items) {
+  const list = document.querySelector("#review-queue-list");
+  updateReviewQueueCount(items.length);
+  if (items.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "review-empty";
+    empty.textContent = "No submissions are awaiting review.";
+    list.replaceChildren(empty);
+    return;
+  }
+  const cards = items.map((item) => {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "review-card";
+    card.style.setProperty("--event-color", groupColor(item).solid);
+    card.setAttribute(
+      "aria-label",
+      `Review submission: ${item.title} by ${item.submitted_by_name || "unknown submitter"}`
+    );
+    const accent = document.createElement("span");
+    accent.className = "card-accent";
+    accent.setAttribute("aria-hidden", "true");
+    const copy = document.createElement("span");
+    copy.className = "day-card-copy";
+    const title = document.createElement("span");
+    title.className = "day-card-title";
+    title.textContent = item.title;
+    const meta = document.createElement("span");
+    meta.className = "day-card-meta";
+    const groups = (item.groups || []).map((group) => group.name).join(", ");
+    meta.textContent = `${reviewTimingText(item)} · ${item.submitted_by_name || "Unknown submitter"}${
+      groups ? ` · ${groups}` : ""
+    }`;
+    copy.append(title, meta);
+    const arrow = document.createElement("span");
+    arrow.className = "card-arrow";
+    arrow.setAttribute("aria-hidden", "true");
+    arrow.textContent = "›";
+    card.append(accent, copy, arrow);
+    card.addEventListener("click", () => openReviewDetail(item.event_id, item.revision_id));
+    return card;
+  });
+  list.replaceChildren(...cards);
+}
+
+async function loadReviewQueue() {
+  if (!isAdminSignedIn()) return;
+  const status = document.querySelector("#review-queue-status");
+  status.textContent = "Loading submissions…";
+  try {
+    const body = await jsonRequest("/api/v1/admin/events?status=pending&limit=200", {
+      headers: authenticatedHeaders(),
+    });
+    renderReviewQueue(body.items || []);
+    const count = (body.items || []).length;
+    status.textContent = count === 0
+      ? "You’re all caught up."
+      : `${count} submission${count === 1 ? "" : "s"} awaiting review.`;
+  } catch (error) {
+    if (error.status === 401) {
+      status.textContent = signOutAfterAuthFailure(
+        "Your admin session expired. Sign in again to review submissions."
+      );
+    } else {
+      status.textContent = error.message;
+    }
+  }
+}
+
+function openReviewQueue() {
+  if (!isAdminSignedIn()) {
+    updateAdminUi();
+    adminDialog.showModal();
+    return;
+  }
+  reviewQueueDialog.showModal();
+  loadReviewQueue();
+}
+
+function renderReviewDetail(revision) {
+  document.querySelector("#review-detail-title").textContent = revision.title;
+  document.querySelector("#review-detail-groups").replaceChildren(
+    ...(revision.groups || []).map((group) => {
+      const pill = document.createElement("span");
+      pill.className = "group-pill";
+      pill.textContent = group.name;
+      return pill;
+    })
+  );
+  const rows = [metaRow("When", formatEventSchedule(revision))];
+  const location = [revision.location_name, revision.location_address]
+    .filter(Boolean)
+    .join(" · ");
+  if (location) rows.push(metaRow("Where", location));
+  if (revision.timezone && !revision.is_all_day) {
+    rows.push(metaRow("Timezone", String(revision.timezone).replaceAll("_", " ")));
+  }
+  if (revision.recurrence_rule) {
+    rows.push(metaRow("Repeats", revision.recurrence_rule));
+  }
+  if (revision.recurrence_dates && revision.recurrence_dates.length > 0) {
+    rows.push(
+      metaRow(
+        "Changed dates",
+        revision.recurrence_dates
+          .map((item) => `${item.local_start} (${item.kind})`)
+          .join(", ")
+      )
+    );
+  }
+  document.querySelector("#review-detail-meta").replaceChildren(...rows);
+  document.querySelector("#review-detail-description").textContent =
+    revision.description || "";
+  const link = document.querySelector("#review-detail-link");
+  let safeUrl = null;
+  try {
+    const candidate = new URL(revision.event_url);
+    if (["http:", "https:"].includes(candidate.protocol)) safeUrl = candidate.href;
+  } catch (_) {
+    safeUrl = null;
+  }
+  link.hidden = !safeUrl;
+  if (safeUrl) link.href = safeUrl;
+  const submitterRows = [
+    metaRow("Submitted by", revision.submitted_by_name || "Unknown"),
+  ];
+  const contact = [revision.submitted_by_channel, revision.submitted_by_contact]
+    .filter(Boolean)
+    .join(" · ");
+  if (contact) submitterRows.push(metaRow("Submitter contact", contact));
+  document.querySelector("#review-detail-submitter").replaceChildren(...submitterRows);
+  document.querySelector("#review-note").value = "";
+  document.querySelector("#review-detail-error").textContent = "";
+}
+
+async function openReviewDetail(eventId, revisionId) {
+  const error = document.querySelector("#review-detail-error");
+  error.textContent = "";
+  try {
+    const audit = await jsonRequest(`/api/v1/admin/events/${eventId}`, {
+      headers: authenticatedHeaders(),
+    });
+    const revisions = audit.revisions || [];
+    const revision = revisions.find((item) => String(item.id) === String(revisionId)) ||
+      revisions.find((item) => String(item.id) === String(audit.current_revision_id)) ||
+      revisions[0];
+    if (!revision) throw new Error("That submission is no longer available.");
+    reviewDetailSelection = { eventId, revisionId: revision.id };
+    renderReviewDetail(revision);
+    if (!reviewDetailDialog.open) reviewDetailDialog.showModal();
+  } catch (loadError) {
+    if (loadError.status === 401 && isAdminSignedIn()) {
+      signOutAfterAuthFailure(loadError.message);
+    }
+    const status = document.querySelector("#review-queue-status");
+    status.textContent = loadError.message;
+  }
+}
+
+async function decideReview(decision) {
+  const { eventId, revisionId } = reviewDetailSelection;
+  const error = document.querySelector("#review-detail-error");
+  const approveButton = document.querySelector("#review-approve-button");
+  const rejectButton = document.querySelector("#review-reject-button");
+  if (!eventId || !revisionId) {
+    error.textContent = "Select a submission from the queue first.";
+    return;
+  }
+  error.textContent = "";
+  approveButton.disabled = true;
+  rejectButton.disabled = true;
+  try {
+    await jsonRequest(
+      `/api/v1/admin/events/${eventId}/revisions/${revisionId}/${decision}`,
+      {
+        method: "POST",
+        headers: { ...authenticatedHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({
+          actor: adminActor(),
+          note: document.querySelector("#review-note").value.trim() || null,
+        }),
+      }
+    );
+    reviewDetailSelection = { eventId: null, revisionId: null };
+    reviewDetailDialog.close();
+    // An approval publishes the event, so refresh the calendar every viewer sees.
+    loadMonth();
+    await loadReviewQueue();
+  } catch (requestError) {
+    if (requestError.status === 401 && isAdminSignedIn()) {
+      signOutAfterAuthFailure(requestError.message);
+    }
+    error.textContent = requestError.message;
+  } finally {
+    approveButton.disabled = false;
+    rejectButton.disabled = false;
+  }
+}
+
+function approveRevision() {
+  return decideReview("approve");
+}
+
+function rejectRevision() {
+  return decideReview("reject");
+}
+
+function editReviewSubmission() {
+  const { eventId } = reviewDetailSelection;
+  if (!eventId) {
+    document.querySelector("#review-detail-error").textContent =
+      "Select a submission from the queue first.";
+    return;
+  }
+  reviewDetailSelection = { eventId: null, revisionId: null };
+  if (reviewDetailDialog.open) reviewDetailDialog.close();
+  if (reviewQueueDialog.open) reviewQueueDialog.close();
+  // The admin event editor publishes on save, completing the approval.
+  openEditEventForm(eventId);
 }
 
 function consumeManagementHash() {
@@ -1652,6 +1915,15 @@ function bindControls() {
   });
   document.querySelector("#admin-login-form").addEventListener("submit", adminLogin);
   document.querySelector("#admin-logout").addEventListener("click", adminLogout);
+  document.querySelector("#review-queue-button").addEventListener("click", openReviewQueue);
+  document.querySelector("#review-back-button").addEventListener("click", () => {
+    if (reviewDetailDialog.open) reviewDetailDialog.close();
+    if (isAdminSignedIn() && !reviewQueueDialog.open) reviewQueueDialog.showModal();
+    loadReviewQueue();
+  });
+  document.querySelector("#review-approve-button").addEventListener("click", approveRevision);
+  document.querySelector("#review-reject-button").addEventListener("click", rejectRevision);
+  document.querySelector("#review-edit-button").addEventListener("click", editReviewSubmission);
   document.querySelectorAll("[data-close]").forEach((button) => {
     button.addEventListener("click", () => document.querySelector(`#${button.dataset.close}`).close());
   });

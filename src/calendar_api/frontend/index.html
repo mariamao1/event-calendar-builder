@@ -25,6 +25,7 @@
             <span class="live-dot" aria-hidden="true"></span>
             Approved community events
           </div>
+          <button class="quiet-button" id="review-queue-button" type="button" hidden>Review queue<span id="review-queue-count" class="review-count" hidden></span></button>
           <button class="quiet-button" id="admin-button" type="button">Admin sign in</button>
           <button class="primary-button" id="create-event-button" type="button">Add an event</button>
         </div>
@@ -271,6 +272,54 @@
             <button class="primary-button" id="event-success-close" type="button">Done</button>
           </div>
         </section>
+      </div>
+    </dialog>
+
+    <dialog id="review-queue-dialog" class="detail-dialog" aria-labelledby="review-queue-title">
+      <div class="dialog-surface review-queue-surface">
+        <div class="dialog-header">
+          <div>
+            <p class="eyebrow">Calendar administration</p>
+            <h2 id="review-queue-title">Review queue</h2>
+            <p class="form-intro">Submissions awaiting review. Select one to see the full proposal.</p>
+          </div>
+          <button class="icon-close" type="button" data-close="review-queue-dialog" aria-label="Close review queue">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" /></svg>
+          </button>
+        </div>
+        <p id="review-queue-status" class="review-status" role="status" aria-live="polite"></p>
+        <div id="review-queue-list" class="review-queue-list"></div>
+      </div>
+    </dialog>
+
+    <dialog id="review-detail-dialog" class="detail-dialog" aria-labelledby="review-detail-title">
+      <div class="dialog-surface event-dialog-surface">
+        <div class="dialog-header">
+          <div>
+            <p class="eyebrow">Proposal under review</p>
+            <h2 id="review-detail-title"></h2>
+          </div>
+          <button class="icon-close" type="button" data-close="review-detail-dialog" aria-label="Close proposal details">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" /></svg>
+          </button>
+        </div>
+        <div id="review-detail-groups" class="event-group-list"></div>
+        <dl id="review-detail-meta" class="event-meta"></dl>
+        <p id="review-detail-description" class="event-description"></p>
+        <a id="review-detail-link" class="event-link" href="#" target="_blank" rel="noopener noreferrer">
+          Event website
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 13 13.5 6.5M9 6.5h4.5V11M13 14H6V7h3" /></svg>
+        </a>
+        <dl id="review-detail-submitter" class="event-meta"></dl>
+        <label class="field-label field-wide">Review note (optional)<input id="review-note" maxlength="4000" placeholder="Visible to other admins in the audit trail" /></label>
+        <p id="review-detail-error" class="form-error" role="alert"></p>
+        <div class="review-actions">
+          <button class="quiet-button" id="review-back-button" type="button">Back to queue</button>
+          <span class="review-actions-spacer"></span>
+          <button class="quiet-button" id="review-edit-button" type="button">Edit</button>
+          <button class="reject-button" id="review-reject-button" type="button">Reject</button>
+          <button class="approve-button" id="review-approve-button" type="button">Approve</button>
+        </div>
       </div>
     </dialog>
 
