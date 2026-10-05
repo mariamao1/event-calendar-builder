@@ -73,6 +73,13 @@ class SQLiteDatabase:
                 connection.execute(
                     "ALTER TABLE events ADD COLUMN management_token_hash BLOB"
                 )
+            if "cancelled_at" not in event_columns:
+                connection.execute("ALTER TABLE events ADD COLUMN cancelled_at TEXT")
+            if "cancelled_by" not in event_columns:
+                connection.execute("ALTER TABLE events ADD COLUMN cancelled_by TEXT")
+            if "cancel_reason" not in event_columns:
+                connection.execute("ALTER TABLE events ADD COLUMN cancel_reason TEXT")
+            _migrate_review_actions(connection, schema)
             connection.execute(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS
@@ -105,6 +112,39 @@ class SQLiteDatabase:
             raise
         finally:
             connection.close()
+
+
+def _migrate_review_actions(connection: sqlite3.Connection, schema: str) -> None:
+    """Rebuild event_review_actions when its CHECK predates cancel/delete.
+
+    SQLite cannot alter a CHECK constraint, so a database created by an older
+    release would reject the `cancel` and `delete` audit actions with a 500.
+    The table is a leaf (nothing references it), so rename, recreate from the
+    current schema, copy, and drop preserves every existing audit row.
+    """
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE name = 'event_review_actions'"
+    ).fetchone()
+    if row is None or "'cancel'" in row[0]:
+        return
+    start = schema.index("CREATE TABLE IF NOT EXISTS event_review_actions")
+    end = schema.index(";", start)
+    create_table = schema[start:end].replace(
+        "CREATE TABLE IF NOT EXISTS", "CREATE TABLE", 1
+    )
+    connection.executescript(
+        f"""
+        PRAGMA foreign_keys = OFF;
+        ALTER TABLE event_review_actions RENAME TO event_review_actions_legacy;
+        {create_table};
+        INSERT INTO event_review_actions (
+          id, event_id, event_revision_id, action, actor, note, occurred_at
+        ) SELECT id, event_id, event_revision_id, action, actor, note, occurred_at
+            FROM event_review_actions_legacy;
+        DROP TABLE event_review_actions_legacy;
+        PRAGMA foreign_keys = ON;
+        """
+    )
 
 
 def create_database(database_url: str, **kwargs: object) -> Database | SQLiteDatabase:

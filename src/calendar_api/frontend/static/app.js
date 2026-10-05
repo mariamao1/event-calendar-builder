@@ -398,6 +398,7 @@ function renderBand(segment) {
     "band",
     segment.continuesLeft ? "continues-left" : "",
     segment.continuesRight ? "continues-right" : "",
+    cancelledClass(event),
   ].filter(Boolean).join(" ");
   button.style.gridColumn = `${segment.start + 1} / ${segment.end + 2}`;
   button.style.gridRow = String(segment.lane + 1);
@@ -424,7 +425,7 @@ function renderTimedEvent(event) {
   const color = groupColor(event);
   const button = document.createElement("button");
   button.type = "button";
-  button.className = "timed-event";
+  button.className = ["timed-event", cancelledClass(event)].filter(Boolean).join(" ");
   button.setAttribute("aria-label", eventAriaLabel(event));
   button.style.setProperty("--event-color", color.solid);
 
@@ -565,6 +566,7 @@ function renderTimeBlock(segment, rangeStartMin, rangeMinutes) {
     "time-block",
     segment.continuesBefore ? "continues-before" : "",
     segment.continuesAfter ? "continues-after" : "",
+    cancelledClass(event),
   ].filter(Boolean).join(" ");
   const clampedStart = Math.max(segment.startMin, rangeStartMin);
   const clampedEnd = Math.min(segment.endMin, rangeStartMin + rangeMinutes);
@@ -617,7 +619,7 @@ function renderTimeView(days, allDayContainer, gridContainer) {
       const color = groupColor(event);
       const button = document.createElement("button");
       button.type = "button";
-      button.className = "allday-chip";
+      button.className = ["allday-chip", cancelledClass(event)].filter(Boolean).join(" ");
       button.style.setProperty("--band-bg", color.soft);
       button.style.setProperty("--band-ink", color.ink);
       button.textContent = event.title;
@@ -843,7 +845,11 @@ async function loadMonth() {
 
 function eventAriaLabel(event) {
   const timing = event.is_all_day ? "All day" : formatTime(event.starts_at);
-  return `${timing}: ${event.title}`;
+  return `${timing}: ${event.title}${event.is_cancelled ? " (cancelled)" : ""}`;
+}
+
+function cancelledClass(event) {
+  return event.is_cancelled ? "is-cancelled" : "";
 }
 
 function dayEventMeta(event, key) {
@@ -866,7 +872,7 @@ function openDayDialog(key) {
   const cards = events.map((event) => {
     const card = document.createElement("button");
     card.type = "button";
-    card.className = "day-event-card";
+    card.className = ["day-event-card", cancelledClass(event)].filter(Boolean).join(" ");
     card.style.setProperty("--event-color", groupColor(event).solid);
     const accent = document.createElement("span");
     accent.className = "card-accent";
@@ -879,7 +885,7 @@ function openDayDialog(key) {
     const meta = document.createElement("span");
     meta.className = "day-card-meta";
     const location = event.location_name ? ` · ${event.location_name}` : "";
-    meta.textContent = `${dayEventMeta(event, key)}${location}`;
+    meta.textContent = `${event.is_cancelled ? "Cancelled · " : ""}${dayEventMeta(event, key)}${location}`;
     copy.append(title, meta);
     const arrow = document.createElement("span");
     arrow.className = "card-arrow";
@@ -1208,6 +1214,7 @@ function renderEventDetail(view) {
 
   eyebrow.textContent = recurring ? "Repeating event" : "Event";
   status.textContent = "";
+  status.classList.remove("is-cancelled");
   if (!event) {
     title.textContent = view.unavailable ? "Event unavailable" : "Loading event…";
     status.textContent = view.unavailable || "";
@@ -1223,8 +1230,15 @@ function renderEventDetail(view) {
   }
 
   title.textContent = event.title;
+  if (event.is_cancelled) {
+    status.textContent = "This event is cancelled.";
+    status.classList.add("is-cancelled");
+  }
   if (view.missingOccurrence) {
-    status.textContent = "That date is no longer on the calendar. Showing the rest of this event.";
+    status.textContent = [
+      status.textContent,
+      "That date is no longer on the calendar. Showing the rest of this event.",
+    ].filter(Boolean).join(" ");
   }
   const rows = [metaRow(view.timingLabel || "When", formatEventSchedule(view.timing || event))];
   const location = [event.location_name, event.location_address].filter(Boolean).join(" · ");
@@ -1382,13 +1396,18 @@ function renderEventActions(view) {
   const edit = document.querySelector("#edit-event-button");
   const review = document.querySelector("#review-event-edit-button");
   const unpublish = document.querySelector("#unpublish-event-button");
+  const cancel = document.querySelector("#cancel-event-button");
+  const remove = document.querySelector("#delete-event-button");
+  const canRemove = admin || creatorToken(eventId);
   copy.hidden = !available;
   copy.textContent = "Copy link";
   document.querySelector("#event-share-fallback").hidden = true;
-  edit.hidden = !available || !(admin || creatorToken(eventId));
+  edit.hidden = !available || !canRemove;
   unpublish.hidden = !available || !admin;
+  cancel.hidden = !available || !canRemove || Boolean(view.event?.is_cancelled);
+  remove.hidden = !available || !canRemove;
   review.hidden = !admin || document.querySelector("#event-admin-pending").hidden;
-  copy.parentElement.hidden = [copy, edit, review, unpublish].every((button) => button.hidden);
+  copy.parentElement.hidden = [copy, edit, review, unpublish, cancel, remove].every((button) => button.hidden);
 }
 
 function currentEventShareUrl() {
@@ -1454,6 +1473,73 @@ async function unpublishEventFromDetail() {
     setEventDetailError(message);
   } finally {
     button.disabled = false;
+  }
+}
+
+function removalHeaders() {
+  // Admins authenticate as themselves; creators use their event token.
+  // Either credential authorizes cancellation and deletion.
+  return {
+    ...authenticatedHeaders(creatorToken(eventDetail.eventId)),
+    "Content-Type": "application/json",
+  };
+}
+
+function finishRemoval(button, title, pastTense) {
+  eventDialog.close();
+  return loadMonth().then(() => {
+    statusRegion.textContent = `“${title}” was ${pastTense}.`;
+  }).finally(() => {
+    button.disabled = false;
+  });
+}
+
+function failRemoval(error) {
+  const message = handleReviewAuthError(error) || error.message;
+  // An expired session falls back to the viewer's version of the page.
+  if (!isAdminSignedIn() && eventDetail.view) renderEventDetail(eventDetail.view);
+  setEventDetailError(message);
+}
+
+async function cancelEventFromDetail() {
+  const { eventId, view } = eventDetail;
+  if (!(isAdminSignedIn() || creatorToken(eventId))) return;
+  const title = view?.event?.title || "this event";
+  const warning = `Cancel "${title}"? It will stay on the calendar marked as cancelled.`;
+  if (!window.confirm(warning)) return;
+  const button = document.querySelector("#cancel-event-button");
+  button.disabled = true;
+  setEventDetailError("");
+  try {
+    await jsonRequest(`/api/v1/events/${eventId}/cancel`, {
+      method: "POST",
+      headers: removalHeaders(),
+    });
+    await finishRemoval(button, title, "cancelled");
+  } catch (error) {
+    button.disabled = false;
+    failRemoval(error);
+  }
+}
+
+async function deleteEventFromDetail() {
+  const { eventId, view } = eventDetail;
+  if (!(isAdminSignedIn() || creatorToken(eventId))) return;
+  const title = view?.event?.title || "this event";
+  const warning = `Delete "${title}"? It will be permanently removed from the calendar for everyone.`;
+  if (!window.confirm(warning)) return;
+  const button = document.querySelector("#delete-event-button");
+  button.disabled = true;
+  setEventDetailError("");
+  try {
+    await jsonRequest(`/api/v1/events/${eventId}`, {
+      method: "DELETE",
+      headers: removalHeaders(),
+    });
+    await finishRemoval(button, title, "deleted");
+  } catch (error) {
+    button.disabled = false;
+    failRemoval(error);
   }
 }
 
@@ -2503,6 +2589,8 @@ function bindControls() {
   document.querySelector("#edit-event-button").addEventListener("click", editEventFromDetail);
   document.querySelector("#review-event-edit-button").addEventListener("click", reviewEventFromDetail);
   document.querySelector("#unpublish-event-button").addEventListener("click", unpublishEventFromDetail);
+  document.querySelector("#cancel-event-button").addEventListener("click", cancelEventFromDetail);
+  document.querySelector("#delete-event-button").addEventListener("click", deleteEventFromDetail);
   eventDialog.addEventListener("close", closeEventDetail);
   document.querySelector("#review-approve-button").addEventListener("click", () => {
     if (reviewDetail) moderateReview(reviewDetail.eventId, reviewDetail.revisionId, "approve");

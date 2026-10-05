@@ -21,6 +21,11 @@ class NotFoundError(ApiError):
         super().__init__(404, "not_found", message)
 
 
+class UnauthorizedError(ApiError):
+    def __init__(self, message: str):
+        super().__init__(401, "unauthorized", message)
+
+
 class ConflictError(ApiError):
     def __init__(self, message: str):
         super().__init__(409, "conflict", message)

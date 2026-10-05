@@ -21,7 +21,14 @@ from .config import Settings
 from .database import Database, SQLiteDatabase, create_database
 from .errors import ApiError, ValidationError
 from .rate_limit import RateLimiter
-from .schemas import EventRevisionInput, GroupCreate, GroupUpdate, LoginInput, ReviewInput
+from .schemas import (
+    EventRevisionInput,
+    GroupCreate,
+    GroupUpdate,
+    LoginInput,
+    RemovalInput,
+    ReviewInput,
+)
 from .security import SessionStore, tokens_equal, verify_password
 
 logger = logging.getLogger(__name__)
@@ -109,7 +116,7 @@ def create_app(
             CORSMiddleware,
             allow_origins=list(settings.cors_origins),
             allow_credentials=False,
-            allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
+            allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
             allow_headers=[
                 "Content-Type",
                 "X-Admin-Key",
@@ -232,9 +239,12 @@ def create_app(
         authorization: str | None,
     ) -> None:
         identity = admin_identity(x_admin_key, authorization)
-        if identity is not None:
-            return
         with database.connection() as connection:
+            if not service.event_exists(connection, event_id):
+                # Deleted events no longer exist, regardless of credentials.
+                raise ApiError(404, "not_found", "event not found")
+            if identity is not None:
+                return
             matches = service.event_management_token_matches(
                 connection, event_id, management_token
             )
@@ -530,6 +540,102 @@ def create_app(
     def revoke(event_id: UUID, payload: ReviewInput) -> dict:
         with database.transaction() as connection:
             return service.revoke_event(connection, event_id, payload)
+
+    def removal_actor(
+        payload: RemovalInput | None, identity: str | None
+    ) -> tuple[str, str | None]:
+        """Resolve who cancelled/deleted and the note they left."""
+        actor = (payload.actor.strip() if payload and payload.actor else "") or (
+            identity or "creator"
+        )
+        note = None
+        if payload is not None:
+            note = payload.note or payload.reason or None
+        return actor, note
+
+    @app.post("/api/v1/events/{event_id}/cancel")
+    def cancel_event(
+        event_id: UUID,
+        payload: RemovalInput | None = None,
+        x_event_management_token: Annotated[
+            str | None, Header(alias="X-Event-Management-Token")
+        ] = None,
+        x_admin_key: Annotated[str | None, Header()] = None,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> dict:
+        """Cancel an event while keeping it visible, marked as cancelled.
+
+        Cancellation means "this event is cancelled": the published content
+        stays on the calendar and in the detail view with `is_cancelled`,
+        because people may already have planned around it. Only an admin or
+        the event creator (via `X-Event-Management-Token`) may cancel.
+        """
+        identity = admin_identity(x_admin_key, authorization)
+        actor, note = removal_actor(payload, identity)
+        with database.transaction() as connection:
+            return service.cancel_event(
+                connection,
+                event_id,
+                actor=actor,
+                note=note,
+                is_admin=identity is not None,
+                management_token=x_event_management_token,
+            )
+
+    @app.delete("/api/v1/events/{event_id}")
+    def delete_event(
+        event_id: UUID,
+        payload: RemovalInput | None = None,
+        x_event_management_token: Annotated[
+            str | None, Header(alias="X-Event-Management-Token")
+        ] = None,
+        x_admin_key: Annotated[str | None, Header()] = None,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> dict:
+        """Delete an event so it no longer exists.
+
+        Deletion means "this event should no longer exist": it leaves the
+        calendar, the detail view, the review queue, and creator reads. Only
+        an admin or the event creator (via `X-Event-Management-Token`) may
+        delete.
+        """
+        identity = admin_identity(x_admin_key, authorization)
+        actor, note = removal_actor(payload, identity)
+        with database.transaction() as connection:
+            return service.delete_event(
+                connection,
+                event_id,
+                actor=actor,
+                note=note,
+                is_admin=identity is not None,
+                management_token=x_event_management_token,
+            )
+
+    @app.post("/api/v1/admin/events/{event_id}/cancel")
+    def admin_cancel_event(
+        event_id: UUID,
+        payload: RemovalInput | None = None,
+        actor: str = Depends(require_admin),
+    ) -> dict:
+        """Admin-only alias of event cancellation (see `cancel_event`)."""
+        resolved, note = removal_actor(payload, actor)
+        with database.transaction() as connection:
+            return service.cancel_event(
+                connection, event_id, actor=resolved, note=note, is_admin=True
+            )
+
+    @app.delete("/api/v1/admin/events/{event_id}")
+    def admin_delete_event(
+        event_id: UUID,
+        payload: RemovalInput | None = None,
+        actor: str = Depends(require_admin),
+    ) -> dict:
+        """Admin-only alias of event deletion (see `delete_event`)."""
+        resolved, note = removal_actor(payload, actor)
+        with database.transaction() as connection:
+            return service.delete_event(
+                connection, event_id, actor=resolved, note=note, is_admin=True
+            )
 
     return app
 

@@ -14,6 +14,7 @@ does not require these commands.
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/001_initial_schema.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/002_event_management_tokens.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/003_optional_event_contact.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/004_event_cancellation.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/tests/001_initial_schema_smoke.sql
 ```
 
@@ -64,7 +65,9 @@ plain language (for example "Every week on Tuesday · 12 times"), added and
 skipped dates, previous/next date navigation, and the upcoming dates. Viewers
 can copy a link to the event, and its creator can edit it. Signed-in admins
 also see moderation details (submitter, approval, any pending edit awaiting
-review) and can edit, review a pending edit, or unpublish. The open event lives in the URL
+review) and can edit, review a pending edit, or unpublish. The event's creator
+or an admin can cancel the event (it stays visible, marked cancelled) or
+delete it (it no longer exists). The open event lives in the URL
 (`?event=…&occurrence=…`), so the link opens straight to that event and date.
 
 When link access is enabled, open the UI with the private token in the URL:

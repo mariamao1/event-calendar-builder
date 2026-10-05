@@ -1899,6 +1899,28 @@ dialog::backdrop {
   display: none;
 }
 
+.event-detail-status.is-cancelled {
+  color: #9c3a24;
+  font-weight: 600;
+}
+
+/* Cancelled events stay on the calendar but read as struck through. */
+.band.is-cancelled,
+.timed-event.is-cancelled,
+.time-block.is-cancelled,
+.allday-chip.is-cancelled,
+.day-event-card.is-cancelled {
+  opacity: 0.72;
+}
+
+.band.is-cancelled .band-title,
+.timed-event.is-cancelled .timed-title,
+.time-block.is-cancelled .time-block-title,
+.allday-chip.is-cancelled,
+.day-event-card.is-cancelled .day-card-title {
+  text-decoration: line-through;
+}
+
 .event-meta[hidden] {
   display: none;
 }

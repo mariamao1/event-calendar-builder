@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 
 from dateutil.relativedelta import relativedelta
 
-from .errors import ConflictError, NotFoundError, ValidationError
+from .errors import ConflictError, NotFoundError, UnauthorizedError, ValidationError
 from .normalization import normalize_contact
 from .recurrence import OccurrenceSpec, expand_revision
 from .schemas import EventRevisionInput, GroupCreate, GroupUpdate, ReviewInput
@@ -222,6 +222,15 @@ def create_event(connection: sqlite3.Connection, payload: EventRevisionInput) ->
         "submitted_at": submitted_at,
         "management_token": management_token,
     }
+
+
+def event_exists(connection: sqlite3.Connection, event_id: UUID) -> bool:
+    """Whether the event exists and has not been deleted."""
+    row = connection.execute(
+        "SELECT 1 AS one FROM events WHERE id = ? AND archived_at IS NULL",
+        (str(event_id),),
+    ).fetchone()
+    return row is not None
 
 
 def event_management_token_matches(
@@ -811,6 +820,178 @@ def revoke_event(
     }
 
 
+def _load_removable_event(
+    connection: sqlite3.Connection, event_id: UUID
+) -> dict:
+    """Load an event row for cancellation or deletion.
+
+    Deleted events (archived) no longer exist, so they read as missing. The
+    existence check comes before authorization so removals of missing events
+    report 404 regardless of credentials.
+    """
+    row = connection.execute(
+        """
+        SELECT id, current_revision_id, published_revision_id, archived_at,
+               cancelled_at, management_token_hash
+          FROM events WHERE id = ?
+        """,
+        (str(event_id),),
+    ).fetchone()
+    if row is None:
+        raise NotFoundError("event not found")
+    event = dict(row)
+    if event["archived_at"] is not None:
+        raise NotFoundError("event not found")
+    return event
+
+
+def _require_removal_permission(
+    event: dict, *, is_admin: bool, management_token: str | None
+) -> None:
+    if is_admin:
+        return
+    if not token_matches_digest(management_token, event["management_token_hash"]):
+        raise UnauthorizedError(
+            "the event creator's management token or admin credentials are required"
+        )
+
+
+def cancel_event(
+    connection: sqlite3.Connection,
+    event_id: UUID,
+    *,
+    actor: str,
+    note: str | None = None,
+    is_admin: bool = False,
+    management_token: str | None = None,
+    now: datetime | None = None,
+) -> dict:
+    """Mark an event cancelled while keeping it visible.
+
+    Cancellation means "this event is cancelled": the published content stays
+    on the calendar and in the detail view, flagged as cancelled, because
+    people may already have planned around it. Only an admin or the event
+    creator (via the management token) may cancel.
+    """
+    now = now or _now()
+    event = _load_removable_event(connection, event_id)
+    _require_removal_permission(
+        event, is_admin=is_admin, management_token=management_token
+    )
+    if event["cancelled_at"] is not None:
+        raise ConflictError("event is already cancelled")
+
+    occurred_at = _timestamp(now)
+    connection.execute(
+        """
+        UPDATE events SET cancelled_at = ?, cancelled_by = ?, cancel_reason = ?,
+          updated_at = ? WHERE id = ?
+        """,
+        (occurred_at, actor, note, occurred_at, event["id"]),
+    )
+    action_id = str(uuid4())
+    connection.execute(
+        """
+        INSERT INTO event_review_actions
+          (id, event_id, event_revision_id, action, actor, note, occurred_at)
+        VALUES (?, ?, ?, 'cancel', ?, ?, ?)
+        """,
+        (
+            action_id,
+            event["id"],
+            event["current_revision_id"],
+            actor,
+            note,
+            occurred_at,
+        ),
+    )
+    return {
+        "event_id": event["id"],
+        "revision_id": event["current_revision_id"],
+        "is_cancelled": True,
+        "cancelled_at": occurred_at,
+        "review_action_id": action_id,
+        "reviewed_at": occurred_at,
+    }
+
+
+def delete_event(
+    connection: sqlite3.Connection,
+    event_id: UUID,
+    *,
+    actor: str,
+    note: str | None = None,
+    is_admin: bool = False,
+    management_token: str | None = None,
+    now: datetime | None = None,
+) -> dict:
+    """Delete an event so it no longer exists.
+
+    Deletion means "this event should no longer exist": the event leaves the
+    calendar, the detail view, the review queue, and creator management reads.
+    Future occurrences are cancelled for downstream history, matching revoke.
+    Only an admin or the event creator (via the management token) may delete.
+    """
+    now = now or _now()
+    event = _load_removable_event(connection, event_id)
+    _require_removal_permission(
+        event, is_admin=is_admin, management_token=management_token
+    )
+
+    occurred_at = _timestamp(now)
+    connection.execute(
+        "UPDATE events SET archived_at = ?, updated_at = ? WHERE id = ?",
+        (occurred_at, occurred_at, event["id"]),
+    )
+    cancelled = 0
+    for item in connection.execute(
+        """
+        SELECT id, is_all_day, starts_at, start_date FROM event_occurrences
+         WHERE event_id = ? AND status = 'scheduled'
+        """,
+        (event["id"],),
+    ).fetchall():
+        is_future = (
+            date.fromisoformat(item["start_date"]) >= now.date()
+            if item["is_all_day"]
+            else datetime.fromisoformat(item["starts_at"]) >= now
+        )
+        if is_future:
+            connection.execute(
+                """
+                UPDATE event_occurrences SET status = 'cancelled',
+                  version = version + 1, cancellation_reason = 'event deleted',
+                  updated_at = ? WHERE id = ?
+                """,
+                (occurred_at, item["id"]),
+            )
+            cancelled += 1
+    action_id = str(uuid4())
+    connection.execute(
+        """
+        INSERT INTO event_review_actions
+          (id, event_id, event_revision_id, action, actor, note, occurred_at)
+        VALUES (?, ?, ?, 'delete', ?, ?, ?)
+        """,
+        (
+            action_id,
+            event["id"],
+            event["current_revision_id"],
+            actor,
+            note,
+            occurred_at,
+        ),
+    )
+    return {
+        "event_id": event["id"],
+        "deleted": True,
+        "archived_at": occurred_at,
+        "cancelled_occurrence_count": cancelled,
+        "review_action_id": action_id,
+        "reviewed_at": occurred_at,
+    }
+
+
 def materialize_all(
     connection: sqlite3.Connection,
     *,
@@ -932,7 +1113,8 @@ def calendar_occurrences(
         f"""
         SELECT o.id AS occurrence_id, o.event_id, o.version, o.is_exception,
                o.is_all_day, o.starts_at, o.ends_at, o.start_date, o.end_date,
-               o.timezone, r.id AS revision_id, r.title, r.description,
+               o.timezone, e.cancelled_at IS NOT NULL AS is_cancelled,
+               r.id AS revision_id, r.title, r.description,
                r.location_name, r.location_address, r.event_url,
                r.recurrence_rule
           FROM event_occurrences o
@@ -965,6 +1147,7 @@ def calendar_occurrences(
         item = dict(source)
         item["is_exception"] = bool(item["is_exception"])
         item["is_all_day"] = bool(item["is_all_day"])
+        item["is_cancelled"] = bool(item.get("is_cancelled"))
         item["groups"] = _groups_for_revision(
             connection, item["revision_id"], active_only=True
         )
@@ -1075,7 +1258,7 @@ def get_published_event(
                r.title, r.description, r.location_name, r.location_address,
                r.event_url, r.is_all_day, r.starts_at, r.ends_at, r.start_date,
                r.end_date, r.timezone, r.recurrence_rule, r.submitted_at,
-               r.reviewed_at
+               r.reviewed_at, e.cancelled_at, e.cancel_reason
           FROM events e JOIN event_revisions r ON r.id = e.published_revision_id
          WHERE e.id = ? AND e.archived_at IS NULL
            AND r.approval_status = 'approved'
@@ -1097,6 +1280,7 @@ def get_published_event(
         raise NotFoundError("published event not found")
     result = dict(row)
     result["is_all_day"] = bool(result["is_all_day"])
+    result["is_cancelled"] = result.get("cancelled_at") is not None
     result["groups"] = _groups_for_revision(
         connection, result["event_revision_id"], active_only=True
     )
@@ -1130,6 +1314,7 @@ def review_queue(
     rows = connection.execute(
         """
         SELECT e.id AS event_id, e.published_revision_id,
+               e.cancelled_at IS NOT NULL AS is_cancelled,
                r.id AS revision_id, r.revision_number, r.approval_status,
                r.title, r.description, r.is_all_day, r.starts_at, r.ends_at,
                r.start_date, r.end_date, r.timezone, r.recurrence_rule,
@@ -1137,7 +1322,7 @@ def review_queue(
                r.submitted_by_contact, r.submitted_at, r.reviewed_at,
                r.reviewed_by, r.review_note
           FROM events e JOIN event_revisions r ON r.id = e.current_revision_id
-         WHERE r.approval_status = ?
+         WHERE e.archived_at IS NULL AND r.approval_status = ?
          ORDER BY r.submitted_at, e.id LIMIT ? OFFSET ?
         """,
         (status, limit, offset),
@@ -1146,6 +1331,7 @@ def review_queue(
     for source in rows:
         item = dict(source)
         item["is_all_day"] = bool(item["is_all_day"])
+        item["is_cancelled"] = bool(item.get("is_cancelled"))
         item["groups"] = _groups_for_revision(
             connection, item["revision_id"], active_only=False
         )
@@ -1161,13 +1347,15 @@ def get_admin_event(connection: sqlite3.Connection, event_id: UUID) -> dict:
                current.revision_number AS current_revision_number,
                e.original_submitter_name, e.original_submitter_channel,
                e.original_submitter_contact, e.submitted_at, e.archived_at,
-               e.updated_at
+               e.cancelled_at, e.cancelled_by, e.cancel_reason, e.updated_at
           FROM events e JOIN event_revisions current ON current.id = e.current_revision_id
          WHERE e.id = ?
         """,
         (str(event_id),),
     ).fetchone()
     if event is None:
+        raise NotFoundError("event not found")
+    if event["archived_at"] is not None:
         raise NotFoundError("event not found")
     revisions = connection.execute(
         "SELECT * FROM event_revisions WHERE event_id = ? ORDER BY revision_number DESC",

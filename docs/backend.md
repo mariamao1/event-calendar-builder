@@ -88,6 +88,8 @@ Public routes:
 | `POST` | `/api/v1/events` | Submit revision 1 for review |
 | `GET` | `/api/v1/events/{event_id}/manage` | Load creator-owned editable content |
 | `POST` | `/api/v1/events/{event_id}/revisions` | Submit a creator-owned edit for review |
+| `POST` | `/api/v1/events/{event_id}/cancel` | Cancel an event (creator or admin); it stays visible, marked cancelled |
+| `DELETE` | `/api/v1/events/{event_id}` | Delete an event (creator or admin); it no longer exists |
 
 Admin routes (require admin authentication, see below):
 
@@ -104,6 +106,8 @@ Admin routes (require admin authentication, see below):
 | `POST` | `/api/v1/admin/events/{event_id}/revisions/{revision_id}/approve` | Publish atomically |
 | `POST` | `/api/v1/admin/events/{event_id}/revisions/{revision_id}/reject` | Reject while retaining prior publication |
 | `POST` | `/api/v1/admin/events/{event_id}/revoke` | Unpublish and cancel future occurrences |
+| `POST` | `/api/v1/admin/events/{event_id}/cancel` | Admin-only alias of event cancellation |
+| `DELETE` | `/api/v1/admin/events/{event_id}` | Admin-only alias of event deletion |
 
 The single-event read powers the event detail view. Besides the published
 revision and its active groups it returns `recurrence_dates` and `occurrence`
@@ -113,6 +117,17 @@ For repeating events, `series` holds the `previous`/`next` scheduled dates
 around the requested one, up to six `upcoming` dates with `upcoming_count`, and
 `coverage_end`, where the materialized window ends. Submitter details are never
 included.
+
+Removal distinguishes cancellation from deletion. Cancelling
+(`POST /api/v1/events/{event_id}/cancel`) means "this event is cancelled": the
+published content stays on the calendar and in the detail view with
+`is_cancelled` set, because people may already have planned around it.
+Deleting (`DELETE /api/v1/events/{event_id}`) means "this event should no
+longer exist": it leaves the calendar, the detail view, the review queue, and
+creator reads (all report it as missing). Both operations require either admin
+authentication or the event creator's `X-Event-Management-Token`; cancelling an
+already-cancelled event reports `409`, and any operation on a deleted event
+reports `404`.
 
 Creating an event returns a one-time `management_token`. Creator reads and edits
 send it in `X-Event-Management-Token`; only its SHA-256 digest is stored. The
@@ -136,10 +151,10 @@ Three modes, all enforced server-side:
   public routes stay open and the server logs a warning; set it in
   production. Missing or wrong tokens return `401`.
 - **Creator mode (event-specific capability).** The event management token can
-  load and edit only its event. It does not grant calendar-wide or moderation
-  access. Losing the token does not expose the event; an administrator can
-  still edit it. Raw management tokens are returned only at creation time and
-  are never persisted.
+  load and edit only its event, and can cancel or delete it. It does not grant
+  calendar-wide or moderation access. Losing the token does not expose the event;
+  an administrator can still edit, cancel, or delete it. Raw management tokens
+  are returned only at creation time and are never persisted.
 - **Admin mode (real authentication).** Approving, rejecting, revoking, group
   management, and revision edits require authentication: either a session
   token from `POST /api/v1/admin/login` (username from `ADMIN_USERNAME`,

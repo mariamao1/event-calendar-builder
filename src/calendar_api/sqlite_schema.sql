@@ -22,6 +22,9 @@ CREATE TABLE IF NOT EXISTS events (
     CHECK (management_token_hash IS NULL OR length(management_token_hash) = 32),
   submitted_at TEXT NOT NULL,
   archived_at TEXT,
+  cancelled_at TEXT,
+  cancelled_by TEXT,
+  cancel_reason TEXT,
   updated_at TEXT NOT NULL,
   FOREIGN KEY (current_revision_id) REFERENCES event_revisions(id),
   FOREIGN KEY (published_revision_id) REFERENCES event_revisions(id)
@@ -76,7 +79,7 @@ CREATE TABLE IF NOT EXISTS event_review_actions (
   id TEXT PRIMARY KEY,
   event_id TEXT NOT NULL REFERENCES events(id),
   event_revision_id TEXT NOT NULL REFERENCES event_revisions(id),
-  action TEXT NOT NULL CHECK (action IN ('approve', 'reject', 'revoke')),
+  action TEXT NOT NULL CHECK (action IN ('approve', 'reject', 'revoke', 'cancel', 'delete')),
   actor TEXT NOT NULL,
   note TEXT,
   occurred_at TEXT NOT NULL

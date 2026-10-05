@@ -205,3 +205,19 @@ class ReviewInput(StrictModel):
 class LoginInput(StrictModel):
     username: Annotated[NonBlank, StringConstraints(max_length=160)]
     password: str = Field(min_length=1, max_length=1024)
+
+
+class RemovalInput(BaseModel):
+    """Optional note for event cancellation or deletion.
+
+    Every field is optional and unknown fields are ignored so callers may
+    send `{"actor": ...}`, `{"note": ...}`, `{"reason": ...}`, or no body at
+    all. The effective actor defaults to the admin identity, falling back to
+    "creator" for management-token callers.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    actor: str | None = None
+    note: str | None = None
+    reason: str | None = None

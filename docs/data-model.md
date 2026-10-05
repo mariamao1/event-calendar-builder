@@ -39,6 +39,13 @@ with its last approved content while an edit is reviewed:
   is unchanged.
 - Revoke/unpublish: clear `published_revision_id`, mark that revision `revoked`,
   record the action, and cancel its future occurrence rows.
+- Cancel: stamp `events.cancelled_at` (with actor and reason) and record a
+  `cancel` action. The published revision and its occurrences are untouched,
+  so the event stays visible everywhere, flagged as cancelled.
+- Delete: stamp `events.archived_at` and record a `delete` action. Archived
+  events are excluded from the calendar, the detail view, the review queue,
+  and creator reads, so a deleted event no longer exists. Future occurrences
+  are cancelled for downstream history, matching revoke.
 
 Approved/rejected/revoked revision content is immutable. A correction is another
 revision. Database triggers enforce this for the revision and its group and
