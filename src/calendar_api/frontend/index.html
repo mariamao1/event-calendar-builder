@@ -25,8 +25,8 @@
             <span class="live-dot" aria-hidden="true"></span>
             Approved community events
           </div>
-          <button class="quiet-button" id="review-queue-button" type="button" hidden>Review queue<span id="review-queue-count" class="review-count" hidden></span></button>
           <button class="quiet-button" id="admin-button" type="button">Admin sign in</button>
+          <button class="quiet-button" id="review-queue-button" type="button" hidden>Review queue <span id="review-queue-count" class="review-count" aria-hidden="true"></span></button>
           <button class="primary-button" id="create-event-button" type="button">Add an event</button>
         </div>
       </header>
@@ -130,24 +130,49 @@
       </div>
     </dialog>
 
-    <dialog id="event-dialog" class="detail-dialog" aria-labelledby="event-dialog-title">
-      <div class="dialog-surface event-dialog-surface">
+    <dialog id="event-dialog" class="detail-dialog event-detail-dialog" aria-labelledby="event-dialog-title">
+      <div class="dialog-surface event-dialog-surface" aria-busy="false">
         <div class="dialog-header">
-          <div id="event-dialog-groups" class="event-group-list"></div>
+          <p id="event-dialog-eyebrow" class="eyebrow">Event</p>
           <button class="icon-close" type="button" data-close="event-dialog" aria-label="Close event details">
             <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" /></svg>
           </button>
         </div>
         <h2 id="event-dialog-title"></h2>
+        <p id="event-dialog-status" class="event-detail-status" role="status" aria-live="polite"></p>
         <dl id="event-dialog-meta" class="event-meta"></dl>
         <p id="event-dialog-description" class="event-description"></p>
         <a id="event-dialog-link" class="event-link" href="#" target="_blank" rel="noopener noreferrer">
           Event website
           <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 13 13.5 6.5M9 6.5h4.5V11M13 14H6V7h3" /></svg>
         </a>
+        <section id="event-dialog-series" class="event-series" aria-labelledby="event-series-heading" hidden>
+          <h3 id="event-series-heading" class="event-section-heading">Repeating series</h3>
+          <p id="event-series-summary" class="event-series-summary"></p>
+          <dl id="event-series-meta" class="event-series-meta"></dl>
+          <div class="series-nav">
+            <button class="quiet-button series-step" id="series-previous" type="button">‹ Previous date</button>
+            <button class="quiet-button series-step" id="series-next" type="button">Next date ›</button>
+          </div>
+          <h4 class="series-list-heading">Upcoming dates</h4>
+          <ol id="event-series-upcoming" class="series-dates"></ol>
+          <p id="event-series-more" class="series-more"></p>
+        </section>
+        <section id="event-dialog-admin" class="event-admin-panel" aria-labelledby="event-admin-heading" hidden>
+          <h3 id="event-admin-heading" class="event-section-heading">Admin details</h3>
+          <dl id="event-admin-meta" class="event-series-meta"></dl>
+          <p id="event-admin-pending" class="event-admin-pending" hidden></p>
+        </section>
+        <p id="event-dialog-footnote" class="event-footnote"></p>
+        <p id="event-dialog-error" class="form-error" role="alert"></p>
         <div class="event-detail-actions">
-          <button class="quiet-button" id="edit-event-button" type="button" hidden>Edit event</button>
+          <button class="quiet-button" id="copy-event-link-button" type="button">Copy link</button>
+          <span class="event-actions-spacer" aria-hidden="true"></span>
+          <button class="quiet-button danger-button" id="unpublish-event-button" type="button" hidden>Unpublish</button>
+          <button class="quiet-button" id="review-event-edit-button" type="button" hidden>Review pending edit</button>
+          <button class="primary-button" id="edit-event-button" type="button" hidden>Edit event</button>
         </div>
+        <label id="event-share-fallback" class="field-label event-share-fallback" hidden>Event link<input id="event-share-url" readonly /></label>
       </div>
     </dialog>
 
@@ -171,6 +196,50 @@
         <div id="admin-signed-in" hidden>
           <p>You’re signed in as <strong id="admin-name"></strong>. Events you create or edit will publish immediately.</p>
           <button class="quiet-button" id="admin-logout" type="button">Sign out</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="review-queue-dialog" class="form-dialog" aria-labelledby="review-queue-title">
+      <div class="dialog-surface review-queue-surface">
+        <div class="dialog-header form-dialog-header">
+          <div>
+            <p class="eyebrow">Calendar administration</p>
+            <h2 id="review-queue-title">Review queue</h2>
+            <p class="form-intro">Community submissions awaiting review. Approving publishes an event to the calendar for all viewers.</p>
+          </div>
+          <button class="icon-close" type="button" data-close="review-queue-dialog" aria-label="Close review queue">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" /></svg>
+          </button>
+        </div>
+        <p id="review-queue-error" class="form-error" role="alert"></p>
+        <div id="review-queue-list" class="review-queue-list" aria-live="polite"></div>
+      </div>
+    </dialog>
+
+    <dialog id="review-detail-dialog" class="detail-dialog" aria-labelledby="review-detail-title">
+      <div class="dialog-surface event-dialog-surface">
+        <div class="dialog-header">
+          <div id="review-detail-groups" class="event-group-list"></div>
+          <button class="icon-close" type="button" data-close="review-detail-dialog" aria-label="Close submission details">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" /></svg>
+          </button>
+        </div>
+        <h2 id="review-detail-title"></h2>
+        <p id="review-detail-submitter" class="review-submitter"></p>
+        <dl id="review-detail-meta" class="event-meta"></dl>
+        <p id="review-detail-description" class="event-description"></p>
+        <a id="review-detail-link" class="event-link" href="#" target="_blank" rel="noopener noreferrer">
+          Event website
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 13 13.5 6.5M9 6.5h4.5V11M13 14H6V7h3" /></svg>
+        </a>
+        <div id="review-detail-history" class="review-history"></div>
+        <label class="field-label review-note-label">Review note<textarea id="review-note" rows="2" maxlength="4000" placeholder="Optional note recorded with this decision"></textarea></label>
+        <p id="review-detail-error" class="form-error" role="alert"></p>
+        <div class="review-detail-actions">
+          <button class="quiet-button" id="review-edit-button" type="button">Edit submission</button>
+          <button class="quiet-button" id="review-reject-button" type="button">Reject</button>
+          <button class="primary-button" id="review-approve-button" type="button">Approve</button>
         </div>
       </div>
     </dialog>
@@ -272,54 +341,6 @@
             <button class="primary-button" id="event-success-close" type="button">Done</button>
           </div>
         </section>
-      </div>
-    </dialog>
-
-    <dialog id="review-queue-dialog" class="detail-dialog" aria-labelledby="review-queue-title">
-      <div class="dialog-surface review-queue-surface">
-        <div class="dialog-header">
-          <div>
-            <p class="eyebrow">Calendar administration</p>
-            <h2 id="review-queue-title">Review queue</h2>
-            <p class="form-intro">Submissions awaiting review. Select one to see the full proposal.</p>
-          </div>
-          <button class="icon-close" type="button" data-close="review-queue-dialog" aria-label="Close review queue">
-            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" /></svg>
-          </button>
-        </div>
-        <p id="review-queue-status" class="review-status" role="status" aria-live="polite"></p>
-        <div id="review-queue-list" class="review-queue-list"></div>
-      </div>
-    </dialog>
-
-    <dialog id="review-detail-dialog" class="detail-dialog" aria-labelledby="review-detail-title">
-      <div class="dialog-surface event-dialog-surface">
-        <div class="dialog-header">
-          <div>
-            <p class="eyebrow">Proposal under review</p>
-            <h2 id="review-detail-title"></h2>
-          </div>
-          <button class="icon-close" type="button" data-close="review-detail-dialog" aria-label="Close proposal details">
-            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" /></svg>
-          </button>
-        </div>
-        <div id="review-detail-groups" class="event-group-list"></div>
-        <dl id="review-detail-meta" class="event-meta"></dl>
-        <p id="review-detail-description" class="event-description"></p>
-        <a id="review-detail-link" class="event-link" href="#" target="_blank" rel="noopener noreferrer">
-          Event website
-          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 13 13.5 6.5M9 6.5h4.5V11M13 14H6V7h3" /></svg>
-        </a>
-        <dl id="review-detail-submitter" class="event-meta"></dl>
-        <label class="field-label field-wide">Review note (optional)<input id="review-note" maxlength="4000" placeholder="Visible to other admins in the audit trail" /></label>
-        <p id="review-detail-error" class="form-error" role="alert"></p>
-        <div class="review-actions">
-          <button class="quiet-button" id="review-back-button" type="button">Back to queue</button>
-          <span class="review-actions-spacer"></span>
-          <button class="quiet-button" id="review-edit-button" type="button">Edit</button>
-          <button class="reject-button" id="review-reject-button" type="button">Reject</button>
-          <button class="approve-button" id="review-approve-button" type="button">Approve</button>
-        </div>
       </div>
     </dialog>
 

@@ -934,44 +934,533 @@ function metaRow(label, value) {
   const term = document.createElement("dt");
   term.textContent = label;
   const detail = document.createElement("dd");
-  detail.textContent = value;
+  if (value instanceof Node) detail.append(value);
+  else detail.textContent = value;
   wrapper.append(term, detail);
   return wrapper;
 }
 
-function openEventDialog(event) {
-  const groups = document.querySelector("#event-dialog-groups");
-  groups.replaceChildren(...(event.groups || []).map((group) => {
+function groupPills(groups) {
+  const list = document.createElement("span");
+  list.className = "event-group-list";
+  for (const group of groups) {
     const pill = document.createElement("span");
     pill.className = "group-pill";
     pill.textContent = group.name;
-    return pill;
-  }));
-  document.querySelector("#event-dialog-title").textContent = event.title;
+    list.append(pill);
+  }
+  return list;
+}
+
+function safeEventUrl(value) {
+  try {
+    const candidate = new URL(value);
+    if (["http:", "https:"].includes(candidate.protocol)) return candidate.href;
+  } catch (_) {
+    // Missing or malformed URLs are simply not linked.
+  }
+  return null;
+}
+
+const WEEKDAY_OFFSETS = { SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6 };
+const RECURRENCE_UNITS = {
+  DAILY: ["day", "days"],
+  WEEKLY: ["week", "weeks"],
+  MONTHLY: ["month", "months"],
+  YEARLY: ["year", "years"],
+};
+const DESCRIBED_RRULE_PARTS = new Set(["FREQ", "INTERVAL", "BYDAY", "BYMONTHDAY", "COUNT", "UNTIL", "WKST"]);
+
+function listText(items) {
+  try {
+    return new Intl.ListFormat(undefined, { style: "long", type: "conjunction" }).format(items);
+  } catch (_) {
+    return items.join(", ");
+  }
+}
+
+function ordinalText(value) {
+  if (value === -1) return "last";
+  if (value < -1) return `${ordinalText(-value)} to last`;
+  const suffix = { 1: "st", 2: "nd", 3: "rd" }[value % 100 > 10 && value % 100 < 14 ? 0 : value % 10] || "th";
+  return `${value}${suffix}`;
+}
+
+// Plain-language summary of the RRULE subset the event form produces, plus
+// the common BYDAY/BYMONTHDAY/COUNT/UNTIL variants. Anything richer is shown
+// as a custom schedule rather than risking a misleading sentence. Without
+// BYDAY/BYMONTHDAY a rule repeats on the series start's weekday/day.
+function describeRecurrence(rule, startKey = null) {
+  if (!rule) return "";
+  const parts = {};
+  for (const piece of rule.split(";")) {
+    const [key, value] = piece.split("=");
+    if (key && value) parts[key.toUpperCase()] = value.toUpperCase();
+  }
+  const units = RECURRENCE_UNITS[parts.FREQ];
+  const interval = Number(parts.INTERVAL || 1);
+  const known = Object.keys(parts).every((key) => DESCRIBED_RRULE_PARTS.has(key));
+  if (!units || !known || !Number.isInteger(interval) || interval < 1) {
+    return "Repeats on a custom schedule";
+  }
+  let text = interval === 1 ? `Every ${units[0]}` : `Every ${interval} ${units[1]}`;
+  const days = parts.BYDAY ? parts.BYDAY.split(",") : [];
+  const weekdays = ["MO", "TU", "WE", "TH", "FR"];
+  if (parts.FREQ === "WEEKLY" && interval === 1 && days.length === 5 && weekdays.every((day) => days.includes(day))) {
+    text = "Every weekday";
+  } else if (days.length > 0) {
+    const names = days.map((day) => {
+      const match = day.match(/^([+-]?\d{1,2})?(SU|MO|TU|WE|TH|FR|SA)$/);
+      if (!match) return null;
+      const name = formatDate(utcDate(2024, 0, 7 + WEEKDAY_OFFSETS[match[2]]), { weekday: "long" });
+      return match[1] ? `the ${ordinalText(Number(match[1]))} ${name}` : name;
+    });
+    if (names.includes(null)) return "Repeats on a custom schedule";
+    text += ` on ${listText(names)}`;
+  } else if (parts.BYMONTHDAY) {
+    text += ` on day ${listText(parts.BYMONTHDAY.split(","))}`;
+  } else if (startKey) {
+    const start = dateFromKey(startKey);
+    if (parts.FREQ === "WEEKLY") text += ` on ${formatDate(start, { weekday: "long" })}`;
+    if (parts.FREQ === "MONTHLY") text += ` on day ${start.getUTCDate()}`;
+    if (parts.FREQ === "YEARLY") text += ` on ${formatDate(start, { month: "long", day: "numeric" })}`;
+  }
+  if (parts.COUNT) {
+    text += ` · ${parts.COUNT} time${parts.COUNT === "1" ? "" : "s"}`;
+  } else if (/^\d{8}/.test(parts.UNTIL || "")) {
+    const until = utcDate(Number(parts.UNTIL.slice(0, 4)), Number(parts.UNTIL.slice(4, 6)) - 1, Number(parts.UNTIL.slice(6, 8)));
+    text += ` · until ${formatDate(until, { month: "short", day: "numeric", year: "numeric" })}`;
+  } else {
+    text += " · no end date";
+  }
+  return text;
+}
+
+function occurrenceDayKey(occurrence) {
+  return occurrence.is_all_day ? occurrence.start_date : localDateKey(new Date(occurrence.starts_at));
+}
+
+function formatOccurrenceLabel(occurrence) {
+  const day = formatDate(dateFromKey(occurrenceDayKey(occurrence)), {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+  return occurrence.is_all_day ? `${day} · All day` : `${day} · ${formatTime(occurrence.starts_at)}`;
+}
+
+function formatLocalDates(items) {
+  return items.map((item) => formatDate(dateFromKey(String(item.local_start).slice(0, 10)), {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  })).join("\n");
+}
+
+// The event detail view. Clicking an event renders it at once from the
+// calendar row, then refines it with the published detail (series context)
+// and, for signed-in admins, moderation details. While it is open the event
+// lives in the URL as ?event=…&occurrence=…, so the address bar is itself a
+// link back to this event; "Copy link" shares the same event with the
+// calendar positioned on its date.
+const eventDetail = { eventId: null, occurrenceId: null, request: null, view: null };
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function writeEventUrl() {
+  try {
+    const url = new URL(window.location.href);
+    if (eventDetail.eventId) url.searchParams.set("event", eventDetail.eventId);
+    else url.searchParams.delete("event");
+    if (eventDetail.eventId && eventDetail.occurrenceId) {
+      url.searchParams.set("occurrence", eventDetail.occurrenceId);
+    } else {
+      url.searchParams.delete("occurrence");
+    }
+    window.history.replaceState(null, "", url);
+  } catch (_) {
+    // URL persistence is a convenience, never a requirement.
+  }
+}
+
+function eventShareUrl(eventId, occurrenceId, dayKey) {
+  // Starts from the current address so a private calendar's link token is
+  // kept; session-only credentials (admin or creator tokens) never are.
+  const url = new URL(window.location.href);
+  url.hash = "";
+  url.searchParams.set("view", state.view);
+  if (dayKey) url.searchParams.set("date", dayKey);
+  url.searchParams.set("event", eventId);
+  if (occurrenceId) url.searchParams.set("occurrence", occurrenceId);
+  else url.searchParams.delete("occurrence");
+  return url.href;
+}
+
+function setEventDetailError(message) {
+  document.querySelector("#event-dialog-error").textContent = message || "";
+}
+
+function openEventDialog(event) {
+  eventDetail.eventId = event.event_id;
+  eventDetail.occurrenceId = event.occurrence_id || null;
+  renderEventDetail({ event, timing: event, timingLabel: "When", loading: true });
+  writeEventUrl();
+  if (!eventDialog.open) eventDialog.showModal();
+  loadEventDetail();
+}
+
+function openEventFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const eventId = params.get("event");
+  if (!eventId || !UUID_PATTERN.test(eventId)) return;
+  const occurrenceId = params.get("occurrence");
+  eventDetail.eventId = eventId;
+  eventDetail.occurrenceId = occurrenceId && UUID_PATTERN.test(occurrenceId) ? occurrenceId : null;
+  writeEventUrl();
+  renderEventDetail({ event: null, loading: true });
+  eventDialog.showModal();
+  loadEventDetail();
+}
+
+function selectSeriesOccurrence(occurrence) {
+  eventDetail.occurrenceId = occurrence.occurrence_id;
+  writeEventUrl();
+  loadEventDetail();
+}
+
+async function loadEventDetail() {
+  if (eventDetail.request) eventDetail.request.abort();
+  const controller = new AbortController();
+  eventDetail.request = controller;
+  const { eventId, occurrenceId } = eventDetail;
+  const path = new URL(`/api/v1/events/${eventId}`, window.location.origin);
+  if (occurrenceId) path.searchParams.set("occurrence", occurrenceId);
+  const surface = eventDialog.querySelector(".event-dialog-surface");
+  surface.setAttribute("aria-busy", "true");
+  setEventDetailError("");
+
+  const publicRequest = jsonRequest(urlWithAccessToken(`${path.pathname}${path.search}`), {
+    signal: controller.signal,
+    headers: { Accept: "application/json" },
+  });
+  const adminRequest = isAdminSignedIn()
+    ? jsonRequest(`/api/v1/admin/events/${eventId}`, {
+      signal: controller.signal,
+      headers: reviewQueueHeaders(),
+    })
+    : Promise.resolve(null);
+  const [publicResult, adminResult] = await Promise.allSettled([publicRequest, adminRequest]);
+  if (eventDetail.request !== controller) return;
+  eventDetail.request = null;
+  surface.setAttribute("aria-busy", "false");
+
+  let admin = adminResult.status === "fulfilled" ? adminResult.value : null;
+  let adminError = null;
+  if (adminResult.status === "rejected") {
+    adminError = handleReviewAuthError(adminResult.reason) || adminResult.reason.message;
+    admin = null;
+  }
+  if (publicResult.status === "rejected") {
+    const error = publicResult.reason;
+    renderEventDetail({
+      event: null,
+      unavailable: error.status === 404
+        ? "This event isn’t on the calendar. It may have been unpublished, or it hasn’t been approved yet."
+        : error.message,
+    });
+    return;
+  }
+
+  const detail = publicResult.value;
+  const series = detail.series;
+  let timing = detail;
+  let timingLabel = series ? "First date" : "When";
+  if (detail.occurrence) {
+    timing = detail.occurrence;
+    timingLabel = "When";
+  } else if (series?.upcoming?.length) {
+    timing = series.upcoming[0];
+    timingLabel = "Next date";
+  }
+  renderEventDetail({
+    event: detail,
+    timing,
+    timingLabel,
+    series,
+    admin,
+    adminError,
+    missingOccurrence: Boolean(occurrenceId) && !detail.occurrence,
+  });
+}
+
+function renderEventDetail(view) {
+  eventDetail.view = view;
+  const { event } = view;
+  const eyebrow = document.querySelector("#event-dialog-eyebrow");
+  const title = document.querySelector("#event-dialog-title");
+  const status = document.querySelector("#event-dialog-status");
   const meta = document.querySelector("#event-dialog-meta");
-  const rows = [metaRow("When", formatEventSchedule(event))];
+  const description = document.querySelector("#event-dialog-description");
+  const link = document.querySelector("#event-dialog-link");
+  const footnote = document.querySelector("#event-dialog-footnote");
+  const recurring = Boolean(view.series || event?.recurrence_rule);
+
+  eyebrow.textContent = recurring ? "Repeating event" : "Event";
+  status.textContent = "";
+  if (!event) {
+    title.textContent = view.unavailable ? "Event unavailable" : "Loading event…";
+    status.textContent = view.unavailable || "";
+    meta.replaceChildren();
+    meta.hidden = true;
+    description.textContent = "";
+    link.hidden = true;
+    footnote.textContent = "";
+    renderSeriesSection(null);
+    renderAdminPanel(view);
+    renderEventActions(view);
+    return;
+  }
+
+  title.textContent = event.title;
+  if (view.missingOccurrence) {
+    status.textContent = "That date is no longer on the calendar. Showing the rest of this event.";
+  }
+  const rows = [metaRow(view.timingLabel || "When", formatEventSchedule(view.timing || event))];
   const location = [event.location_name, event.location_address].filter(Boolean).join(" · ");
   if (location) rows.push(metaRow("Where", location));
-  if (event.timezone && !event.is_all_day) rows.push(metaRow("Timezone", event.timezone.replaceAll("_", " ")));
-  meta.replaceChildren(...rows);
-  document.querySelector("#event-dialog-description").textContent = event.description || "";
-  const link = document.querySelector("#event-dialog-link");
-  let safeUrl = null;
-  try {
-    const candidate = new URL(event.event_url);
-    if (["http:", "https:"].includes(candidate.protocol)) safeUrl = candidate.href;
-  } catch (_) {
-    safeUrl = null;
+  if (event.timezone && !(view.timing || event).is_all_day) {
+    const eventZone = event.timezone.replaceAll("_", " ");
+    rows.push(metaRow(
+      "Timezone",
+      event.timezone === state.timezone
+        ? eventZone
+        : `${eventZone} · times shown in your timezone (${state.timezone.replaceAll("_", " ")})`
+    ));
   }
+  if (event.groups?.length) rows.push(metaRow(event.groups.length === 1 ? "Group" : "Groups", groupPills(event.groups)));
+  meta.replaceChildren(...rows);
+  meta.hidden = false;
+  description.textContent = event.description || "";
+  const safeUrl = safeEventUrl(event.event_url);
   link.hidden = !safeUrl;
   if (safeUrl) link.href = safeUrl;
-  const editButton = document.querySelector("#edit-event-button");
-  editButton.hidden = !(isAdminSignedIn() || creatorToken(event.event_id));
-  editButton.onclick = () => {
+
+  const published = event.reviewed_at
+    ? formatSubmittedAt(event.reviewed_at)
+    : null;
+  footnote.textContent = published
+    ? `${event.revision_number > 1 ? "Last updated" : "Published"} ${published}`
+    : "";
+
+  renderSeriesSection(view);
+  renderAdminPanel(view);
+  renderEventActions(view);
+}
+
+function renderSeriesSection(view) {
+  const section = document.querySelector("#event-dialog-series");
+  const series = view?.series;
+  section.hidden = !series;
+  if (!series) return;
+  const { event } = view;
+  const startKey = occurrenceDayKey(event);
+  document.querySelector("#event-series-summary").textContent = event.recurrence_rule
+    ? describeRecurrence(event.recurrence_rule, startKey)
+    : "On selected dates";
+
+  const rows = [metaRow("Starts", formatDate(dateFromKey(startKey), {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }))];
+  const dates = event.recurrence_dates || [];
+  const added = dates.filter((item) => item.kind === "include");
+  const skipped = dates.filter((item) => item.kind === "exclude");
+  if (added.length) rows.push(metaRow("Added", formatLocalDates(added)));
+  if (skipped.length) rows.push(metaRow("Skipped", formatLocalDates(skipped)));
+  document.querySelector("#event-series-meta").replaceChildren(...rows);
+
+  const selected = view.timingLabel === "When" ? view.timing : null;
+  const previous = document.querySelector("#series-previous");
+  const next = document.querySelector("#series-next");
+  previous.parentElement.hidden = !selected;
+  previous.disabled = !series.previous;
+  next.disabled = !series.next;
+  previous.onclick = () => series.previous && selectSeriesOccurrence(series.previous);
+  next.onclick = () => series.next && selectSeriesOccurrence(series.next);
+  previous.setAttribute("aria-label", series.previous
+    ? `Previous date: ${formatOccurrenceLabel(series.previous)}`
+    : "No earlier date");
+  next.setAttribute("aria-label", series.next
+    ? `Next date: ${formatOccurrenceLabel(series.next)}`
+    : "No later date");
+
+  const upcoming = document.querySelector("#event-series-upcoming");
+  const currentId = selected?.occurrence_id || (view.timingLabel === "Next date" ? view.timing.occurrence_id : null);
+  upcoming.replaceChildren(...series.upcoming.map((occurrence) => {
+    const item = document.createElement("li");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "series-date";
+    const isCurrent = occurrence.occurrence_id === currentId;
+    button.classList.toggle("is-current", isCurrent);
+    if (isCurrent) button.setAttribute("aria-current", "date");
+    button.textContent = formatOccurrenceLabel(occurrence);
+    if (occurrence.is_exception) {
+      const tag = document.createElement("span");
+      tag.className = "series-date-tag";
+      tag.textContent = "Added";
+      button.append(tag);
+    }
+    button.addEventListener("click", () => selectSeriesOccurrence(occurrence));
+    item.append(button);
+    return item;
+  }));
+
+  const more = document.querySelector("#event-series-more");
+  const remaining = series.upcoming_count - series.upcoming.length;
+  const coverageEnd = series.coverage_end
+    ? formatDate(addDays(dateFromKey(String(series.coverage_end).slice(0, 10)), -1), {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    })
+    : null;
+  const notes = [];
+  if (series.upcoming.length === 0) notes.push("No upcoming dates are scheduled.");
+  else if (remaining > 0) {
+    notes.push(`+${remaining} more date${remaining === 1 ? "" : "s"}${coverageEnd ? ` scheduled through ${coverageEnd}` : ""}.`);
+  }
+  if (isAdminSignedIn() || creatorToken(event.event_id)) {
+    notes.push("Edits apply to every date in this series.");
+  }
+  more.textContent = notes.join(" ");
+}
+
+function renderAdminPanel(view) {
+  const panel = document.querySelector("#event-dialog-admin");
+  const pending = document.querySelector("#event-admin-pending");
+  const admin = view.admin;
+  panel.hidden = !isAdminSignedIn() || !(admin || view.adminError);
+  pending.hidden = true;
+  if (panel.hidden) return;
+  if (!admin) {
+    document.querySelector("#event-admin-meta").replaceChildren(metaRow("Status", view.adminError));
+    return;
+  }
+  const revisions = admin.revisions || [];
+  const published = revisions.find((item) => item.id === admin.published_revision_id);
+  const current = revisions.find((item) => item.id === admin.current_revision_id);
+  const submitter = admin.original_submitter_contact
+    ? `${admin.original_submitter_name} · ${admin.original_submitter_channel}: ${admin.original_submitter_contact}`
+    : admin.original_submitter_name;
+  const rows = [metaRow("Submitted", `${submitter}\n${formatSubmittedAt(admin.submitted_at)}`)];
+  if (published) {
+    const reviewer = published.reviewed_by ? ` by ${published.reviewed_by}` : "";
+    const at = published.reviewed_at ? ` · ${formatSubmittedAt(published.reviewed_at)}` : "";
+    rows.push(metaRow("Published", `Revision ${published.revision_number}, approved${reviewer}${at}`));
+  } else {
+    rows.push(metaRow("Published", "Not currently published"));
+  }
+  rows.push(metaRow("Revisions", String(revisions.length)));
+  document.querySelector("#event-admin-meta").replaceChildren(...rows);
+  if (current && current.id !== admin.published_revision_id && current.approval_status === "pending") {
+    pending.hidden = false;
+    pending.textContent =
+      `Revision ${current.revision_number} from ${current.submitted_by_name} (${formatSubmittedAt(current.submitted_at)}) ` +
+      "is awaiting review. Viewers see the published version until it is approved.";
+  }
+}
+
+function renderEventActions(view) {
+  const eventId = eventDetail.eventId;
+  const available = Boolean(view.event) || (view.loading && Boolean(eventId));
+  const admin = isAdminSignedIn();
+  const copy = document.querySelector("#copy-event-link-button");
+  const edit = document.querySelector("#edit-event-button");
+  const review = document.querySelector("#review-event-edit-button");
+  const unpublish = document.querySelector("#unpublish-event-button");
+  copy.hidden = !available;
+  copy.textContent = "Copy link";
+  document.querySelector("#event-share-fallback").hidden = true;
+  edit.hidden = !available || !(admin || creatorToken(eventId));
+  unpublish.hidden = !available || !admin;
+  review.hidden = !admin || document.querySelector("#event-admin-pending").hidden;
+  copy.parentElement.hidden = [copy, edit, review, unpublish].every((button) => button.hidden);
+}
+
+function currentEventShareUrl() {
+  const { view } = eventDetail;
+  const timing = view?.timing;
+  // While a shared link is still loading, keep the occurrence it named.
+  const occurrenceId = view?.timingLabel === "When"
+    ? timing?.occurrence_id || eventDetail.occurrenceId
+    : (view?.loading && !timing ? eventDetail.occurrenceId : null);
+  const dayKey = timing && (timing.starts_at || timing.start_date) ? occurrenceDayKey(timing) : null;
+  return eventShareUrl(eventDetail.eventId, occurrenceId, dayKey);
+}
+
+async function copyEventLink() {
+  const button = document.querySelector("#copy-event-link-button");
+  const shareUrl = currentEventShareUrl();
+  try {
+    await navigator.clipboard.writeText(shareUrl);
+    button.textContent = "Link copied";
+  } catch (_) {
+    const fallback = document.querySelector("#event-share-fallback");
+    const input = document.querySelector("#event-share-url");
+    input.value = shareUrl;
+    fallback.hidden = false;
+    input.focus();
+    input.select();
+  }
+}
+
+function editEventFromDetail() {
+  const { eventId } = eventDetail;
+  eventDialog.close();
+  openEditEventForm(eventId);
+}
+
+function reviewEventFromDetail() {
+  const { eventId } = eventDetail;
+  eventDialog.close();
+  openReviewDetail(eventId);
+}
+
+async function unpublishEventFromDetail() {
+  const { eventId, view } = eventDetail;
+  const title = view?.event?.title || "this event";
+  const warning = `Unpublish "${title}"? It will be removed from the calendar for everyone, and its upcoming dates will be cancelled.`;
+  if (!isAdminSignedIn() || !window.confirm(warning)) return;
+  const button = document.querySelector("#unpublish-event-button");
+  button.disabled = true;
+  setEventDetailError("");
+  try {
+    await jsonRequest(`/api/v1/admin/events/${eventId}/revoke`, {
+      method: "POST",
+      headers: { ...reviewQueueHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ actor: adminDisplayName(), note: "Unpublished from event details" }),
+    });
     eventDialog.close();
-    openEditEventForm(event.event_id);
-  };
-  eventDialog.showModal();
+    await loadMonth();
+    statusRegion.textContent = `“${title}” was unpublished.`;
+  } catch (error) {
+    const message = handleReviewAuthError(error) || error.message;
+    // An expired session falls back to the viewer's version of the page.
+    if (!isAdminSignedIn() && eventDetail.view) renderEventDetail(eventDetail.view);
+    setEventDetailError(message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function closeEventDetail() {
+  if (eventDetail.request) eventDetail.request.abort();
+  Object.assign(eventDetail, { eventId: null, occurrenceId: null, request: null, view: null });
+  writeEventUrl();
 }
 
 function moveMonth(offset) {
@@ -1016,7 +1505,13 @@ const eventFormDialog = document.querySelector("#event-form-dialog");
 const eventForm = document.querySelector("#event-form");
 const eventFormSuccess = document.querySelector("#event-form-success");
 const adminDialog = document.querySelector("#admin-dialog");
-let eventFormMode = { eventId: null, managementToken: null };
+const reviewQueueDialog = document.querySelector("#review-queue-dialog");
+const reviewQueueList = document.querySelector("#review-queue-list");
+const reviewQueueError = document.querySelector("#review-queue-error");
+const reviewDetailDialog = document.querySelector("#review-detail-dialog");
+let eventFormMode = { eventId: null, managementToken: null, stayPending: false };
+let reviewQueueItems = [];
+let reviewDetail = null;
 let availableGroups = [];
 
 function safeSessionGet(key) {
@@ -1337,21 +1832,28 @@ function resetEventForm() {
 function updateEventFormMode() {
   const editing = Boolean(eventFormMode.eventId);
   const admin = isAdminSignedIn();
+  const queueEdit = editing && admin && eventFormMode.stayPending;
   document.querySelector("#event-form-title").textContent = editing ? "Edit event" : "Add an event";
   document.querySelector("#event-form-eyebrow").textContent = admin ? "Admin event editor" : "Community submission";
-  document.querySelector("#event-form-intro").textContent = admin
-    ? "As an admin, this event will be approved and published when you save it."
-    : "Submissions and edits are reviewed by an admin before they appear on the calendar.";
-  document.querySelector("#approval-note").textContent = admin
-    ? "This admin-authored event will publish immediately."
-    : "An admin will review this event before it is published.";
-  document.querySelector("#event-submit-button").textContent = admin
-    ? (editing ? "Save and publish" : "Publish event")
-    : (editing ? "Submit edit for review" : "Submit for review");
+  document.querySelector("#event-form-intro").textContent = queueEdit
+    ? "Edit this submission. It stays in the review queue until you approve it."
+    : admin
+      ? "As an admin, this event will be approved and published when you save it."
+      : "Submissions and edits are reviewed by an admin before they appear on the calendar.";
+  document.querySelector("#approval-note").textContent = queueEdit
+    ? "Saving keeps this submission in the review queue."
+    : admin
+      ? "This admin-authored event will publish immediately."
+      : "An admin will review this event before it is published.";
+  document.querySelector("#event-submit-button").textContent = queueEdit
+    ? "Save edit"
+    : admin
+      ? (editing ? "Save and publish" : "Publish event")
+      : (editing ? "Submit edit for review" : "Submit for review");
 }
 
 async function openCreateEventForm() {
-  eventFormMode = { eventId: null, managementToken: null };
+  eventFormMode = { eventId: null, managementToken: null, stayPending: false };
   resetEventForm();
   updateEventFormMode();
   eventFormDialog.showModal();
@@ -1384,9 +1886,13 @@ function populateEventForm(event) {
   for (const item of event.recurrence_dates || []) addRecurrenceDate(item.local_start, item.kind);
 }
 
-async function openEditEventForm(eventId, suppliedToken = null) {
+async function openEditEventForm(eventId, suppliedToken = null, options = {}) {
   const managementToken = suppliedToken || creatorToken(eventId);
-  eventFormMode = { eventId, managementToken };
+  eventFormMode = {
+    eventId,
+    managementToken,
+    stayPending: Boolean(options.stayPending) && isAdminSignedIn(),
+  };
   resetEventForm();
   updateEventFormMode();
   eventFormDialog.showModal();
@@ -1479,8 +1985,7 @@ function buildEventPayload() {
 
 function managementLink(eventId, token) {
   const url = new URL(window.location.href);
-  url.searchParams.delete("view");
-  url.searchParams.delete("date");
+  for (const key of ["view", "date", "event", "occurrence"]) url.searchParams.delete(key);
   url.hash = `manage=${eventId}.${token}`;
   return url.href;
 }
@@ -1506,8 +2011,13 @@ async function submitEventForm(event) {
     const payload = buildEventPayload();
     const editing = Boolean(eventFormMode.eventId);
     const admin = isAdminSignedIn();
+    // An admin editing a queued submission keeps it pending so it can still
+    // be approved or rejected afterwards; every other admin save publishes.
+    const queueEdit = editing && admin && eventFormMode.stayPending;
     let path;
-    if (admin) {
+    if (queueEdit) {
+      path = `/api/v1/events/${eventFormMode.eventId}/revisions`;
+    } else if (admin) {
       path = editing
         ? `/api/v1/admin/events/${eventFormMode.eventId}/revisions`
         : "/api/v1/admin/events";
@@ -1528,15 +2038,17 @@ async function submitEventForm(event) {
     const token = result.management_token || eventFormMode.managementToken;
     rememberCreatorToken(result.event_id, token);
     showEventSuccess(result, token);
-    if (admin) {
+    if (queueEdit) {
+      await refreshReviewQueue();
+      if (reviewDetail && reviewDetail.eventId === result.event_id) {
+        await loadReviewDetail(result.event_id);
+      }
+    } else if (admin) {
       loadMonth();
-      loadReviewQueue();
     }
   } catch (error) {
     if (error.status === 401 && isAdminSignedIn()) {
-      safeSessionRemove("calendar-admin-token");
-      safeSessionRemove("calendar-admin-name");
-      updateAdminUi();
+      signOutAdmin();
     }
     setEventFormError(error.message);
   } finally {
@@ -1560,13 +2072,12 @@ function updateAdminUi() {
   document.querySelector("#admin-login-form").hidden = signedIn;
   document.querySelector("#admin-signed-in").hidden = !signedIn;
   document.querySelector("#admin-name").textContent = name;
-  document.querySelector("#review-queue-button").hidden = !signedIn;
   if (signedIn) {
-    loadReviewQueue();
+    updateReviewQueueButton();
+    refreshReviewQueue();
   } else {
-    const count = document.querySelector("#review-queue-count");
-    count.hidden = true;
-    count.textContent = "";
+    reviewQueueItems = [];
+    updateReviewQueueButton();
   }
 }
 
@@ -1600,131 +2111,247 @@ async function adminLogout() {
       headers: { Authorization: `Bearer ${token}` },
     }).catch(() => null);
   }
+  signOutAdmin();
+}
+
+function signOutAdmin() {
   safeSessionRemove("calendar-admin-token");
   safeSessionRemove("calendar-admin-name");
+  reviewQueueItems = [];
+  reviewDetail = null;
+  if (reviewQueueDialog.open) reviewQueueDialog.close();
+  if (reviewDetailDialog.open) reviewDetailDialog.close();
   updateAdminUi();
 }
 
-const reviewQueueDialog = document.querySelector("#review-queue-dialog");
-const reviewDetailDialog = document.querySelector("#review-detail-dialog");
-let reviewDetailSelection = { eventId: null, revisionId: null };
-
-function adminActor() {
+function adminDisplayName() {
   return safeSessionGet("calendar-admin-name") || "admin";
 }
 
-function signOutAfterAuthFailure(message) {
-  safeSessionRemove("calendar-admin-token");
-  safeSessionRemove("calendar-admin-name");
-  updateAdminUi();
-  return message;
+function reviewQueueHeaders() {
+  return { Accept: "application/json", Authorization: `Bearer ${adminToken()}` };
 }
 
-function updateReviewQueueCount(count) {
-  const badge = document.querySelector("#review-queue-count");
-  badge.hidden = count <= 0;
-  badge.textContent = count > 0 ? String(count) : "";
+function formatSubmittedAt(value) {
+  if (!value) return "Unknown date";
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value));
 }
 
-function reviewTimingText(item) {
-  if (item.is_all_day) {
-    return `${item.start_date} – ${item.end_date} · All day`;
+function submitterLine(item) {
+  const name = item.submitted_by_name || "Anonymous";
+  const contact = item.submitted_by_contact
+    ? ` · ${item.submitted_by_channel}: ${item.submitted_by_contact}`
+    : "";
+  return `${name}${contact}`;
+}
+
+function setReviewQueueError(message) {
+  reviewQueueError.textContent = message || "";
+}
+
+function setReviewDetailError(message) {
+  document.querySelector("#review-detail-error").textContent = message || "";
+}
+
+function handleReviewAuthError(error) {
+  if (error && error.status === 401 && isAdminSignedIn()) {
+    signOutAdmin();
+    return "Your admin session expired. Sign in again to continue reviewing.";
   }
-  if (item.starts_at && item.ends_at) {
-    return `${formatTime(item.starts_at)}–${formatTime(item.ends_at)}`;
-  }
-  return "Timing to be confirmed";
+  return null;
 }
 
-function renderReviewQueue(items) {
-  const list = document.querySelector("#review-queue-list");
-  updateReviewQueueCount(items.length);
-  if (items.length === 0) {
-    const empty = document.createElement("p");
-    empty.className = "review-empty";
-    empty.textContent = "No submissions are awaiting review.";
-    list.replaceChildren(empty);
+function updateReviewQueueButton() {
+  const button = document.querySelector("#review-queue-button");
+  const count = document.querySelector("#review-queue-count");
+  if (!isAdminSignedIn()) {
+    button.hidden = true;
+    count.textContent = "";
+    button.removeAttribute("aria-label");
     return;
   }
-  const cards = items.map((item) => {
-    const card = document.createElement("button");
-    card.type = "button";
-    card.className = "review-card";
-    card.style.setProperty("--event-color", groupColor(item).solid);
-    card.setAttribute(
-      "aria-label",
-      `Review submission: ${item.title} by ${item.submitted_by_name || "unknown submitter"}`
-    );
-    const accent = document.createElement("span");
-    accent.className = "card-accent";
-    accent.setAttribute("aria-hidden", "true");
-    const copy = document.createElement("span");
-    copy.className = "day-card-copy";
-    const title = document.createElement("span");
-    title.className = "day-card-title";
-    title.textContent = item.title;
-    const meta = document.createElement("span");
-    meta.className = "day-card-meta";
-    const groups = (item.groups || []).map((group) => group.name).join(", ");
-    meta.textContent = `${reviewTimingText(item)} · ${item.submitted_by_name || "Unknown submitter"}${
-      groups ? ` · ${groups}` : ""
-    }`;
-    copy.append(title, meta);
-    const arrow = document.createElement("span");
-    arrow.className = "card-arrow";
-    arrow.setAttribute("aria-hidden", "true");
-    arrow.textContent = "›";
-    card.append(accent, copy, arrow);
-    card.addEventListener("click", () => openReviewDetail(item.event_id, item.revision_id));
-    return card;
-  });
-  list.replaceChildren(...cards);
+  button.hidden = false;
+  const pending = reviewQueueItems.length;
+  count.textContent = pending > 0 ? String(pending) : "";
+  button.setAttribute(
+    "aria-label",
+    pending === 1 ? "Review queue, 1 submission pending" : `Review queue, ${pending} submissions pending`
+  );
 }
 
-async function loadReviewQueue() {
-  if (!isAdminSignedIn()) return;
-  const status = document.querySelector("#review-queue-status");
-  status.textContent = "Loading submissions…";
+async function refreshReviewQueue() {
+  if (!isAdminSignedIn()) {
+    reviewQueueItems = [];
+    updateReviewQueueButton();
+    return;
+  }
   try {
     const body = await jsonRequest("/api/v1/admin/events?status=pending&limit=200", {
-      headers: authenticatedHeaders(),
+      headers: reviewQueueHeaders(),
     });
-    renderReviewQueue(body.items || []);
-    const count = (body.items || []).length;
-    status.textContent = count === 0
-      ? "You’re all caught up."
-      : `${count} submission${count === 1 ? "" : "s"} awaiting review.`;
+    reviewQueueItems = body.items || [];
+    setReviewQueueError("");
   } catch (error) {
-    if (error.status === 401) {
-      status.textContent = signOutAfterAuthFailure(
-        "Your admin session expired. Sign in again to review submissions."
-      );
-    } else {
-      status.textContent = error.message;
+    const authMessage = handleReviewAuthError(error);
+    if (!authMessage) {
+      setReviewQueueError(error.message);
+      renderReviewQueue();
+      return;
     }
+    setReviewQueueError(authMessage);
+    reviewQueueItems = [];
   }
+  updateReviewQueueButton();
+  renderReviewQueue();
 }
 
-function openReviewQueue() {
-  if (!isAdminSignedIn()) {
-    updateAdminUi();
-    adminDialog.showModal();
-    return;
-  }
-  reviewQueueDialog.showModal();
-  loadReviewQueue();
-}
+function reviewCard(item) {
+  const card = document.createElement("article");
+  card.className = "review-card";
 
-function renderReviewDetail(revision) {
-  document.querySelector("#review-detail-title").textContent = revision.title;
-  document.querySelector("#review-detail-groups").replaceChildren(
-    ...(revision.groups || []).map((group) => {
+  const title = document.createElement("h3");
+  title.className = "review-card-title";
+  title.textContent = item.title;
+  card.append(title);
+
+  const meta = document.createElement("p");
+  meta.className = "review-card-meta";
+  meta.textContent = formatEventSchedule(item);
+  card.append(meta);
+
+  const submitter = document.createElement("p");
+  submitter.className = "review-card-meta";
+  submitter.textContent = `Submitted by ${submitterLine(item)} · ${formatSubmittedAt(item.submitted_at)}`;
+  card.append(submitter);
+
+  if (item.description) {
+    const description = document.createElement("p");
+    description.className = "review-card-description";
+    description.textContent = item.description;
+    card.append(description);
+  }
+
+  if (item.groups && item.groups.length > 0) {
+    const groups = document.createElement("div");
+    groups.className = "event-group-list review-card-groups";
+    for (const group of item.groups) {
       const pill = document.createElement("span");
       pill.className = "group-pill";
       pill.textContent = group.name;
-      return pill;
-    })
+      groups.append(pill);
+    }
+    card.append(groups);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "review-card-actions";
+  const details = document.createElement("button");
+  details.type = "button";
+  details.className = "quiet-button";
+  details.textContent = "Details";
+  details.addEventListener("click", () => openReviewDetail(item.event_id));
+  const edit = document.createElement("button");
+  edit.type = "button";
+  edit.className = "quiet-button";
+  edit.textContent = "Edit";
+  edit.addEventListener("click", () => editReviewSubmission(item.event_id));
+  const approve = document.createElement("button");
+  approve.type = "button";
+  approve.className = "primary-button";
+  approve.textContent = "Approve";
+  approve.addEventListener("click", () => moderateReview(item.event_id, item.revision_id, "approve"));
+  const reject = document.createElement("button");
+  reject.type = "button";
+  reject.className = "quiet-button";
+  reject.textContent = "Reject";
+  reject.addEventListener("click", () => {
+    if (window.confirm(`Reject "${item.title}"? It will stay off the public calendar.`)) {
+      moderateReview(item.event_id, item.revision_id, "reject");
+    }
+  });
+  actions.append(details, edit, approve, reject);
+  card.append(actions);
+  return card;
+}
+
+function renderReviewQueue() {
+  if (reviewQueueItems.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "review-queue-empty";
+    empty.textContent = "No submissions are awaiting review.";
+    reviewQueueList.replaceChildren(empty);
+    return;
+  }
+  reviewQueueList.replaceChildren(...reviewQueueItems.map(reviewCard));
+}
+
+async function openReviewQueue() {
+  if (!isAdminSignedIn()) return;
+  setReviewQueueError("");
+  reviewQueueList.replaceChildren();
+  const loading = document.createElement("p");
+  loading.className = "review-queue-empty";
+  loading.textContent = "Loading review queue…";
+  reviewQueueList.append(loading);
+  if (!reviewQueueDialog.open) reviewQueueDialog.showModal();
+  await refreshReviewQueue();
+}
+
+function currentPendingRevision(detail) {
+  return (detail.revisions || []).find(
+    (revision) => revision.id === detail.current_revision_id
   );
+}
+
+function recurrenceText(revision) {
+  const parts = [];
+  if (revision.recurrence_rule) parts.push(`Repeats: ${revision.recurrence_rule}`);
+  for (const item of revision.recurrence_dates || []) {
+    const marker = item.kind === "exclude" ? "−" : "+";
+    parts.push(`${marker} ${String(item.local_start).slice(0, 16)} (${item.kind})`);
+  }
+  return parts.join("\n");
+}
+
+async function openReviewDetail(eventId) {
+  if (!isAdminSignedIn()) return;
+  setReviewDetailError("");
+  document.querySelector("#review-note").value = "";
+  try {
+    await loadReviewDetail(eventId);
+  } catch (error) {
+    const authMessage = handleReviewAuthError(error);
+    setReviewDetailError(authMessage || error.message);
+    return;
+  }
+  if (!reviewDetailDialog.open) reviewDetailDialog.showModal();
+}
+
+async function loadReviewDetail(eventId) {
+  const detail = await jsonRequest(`/api/v1/admin/events/${eventId}`, {
+    headers: reviewQueueHeaders(),
+  });
+  const revision = currentPendingRevision(detail);
+  if (!revision) throw new Error("This submission has no pending revision.");
+  reviewDetail = { eventId, revisionId: revision.id };
+  renderReviewDetail(detail, revision);
+  setReviewDetailError("");
+}
+
+function renderReviewDetail(detail, revision) {
+  const groups = document.querySelector("#review-detail-groups");
+  groups.replaceChildren(...(revision.groups || []).map((group) => {
+    const pill = document.createElement("span");
+    pill.className = "group-pill";
+    pill.textContent = group.name;
+    return pill;
+  }));
+  document.querySelector("#review-detail-title").textContent = revision.title;
+  document.querySelector("#review-detail-submitter").textContent =
+    `Submitted by ${submitterLine(revision)} · ${formatSubmittedAt(revision.submitted_at)} · revision ${revision.revision_number}`;
   const rows = [metaRow("When", formatEventSchedule(revision))];
   const location = [revision.location_name, revision.location_address]
     .filter(Boolean)
@@ -1733,22 +2360,11 @@ function renderReviewDetail(revision) {
   if (revision.timezone && !revision.is_all_day) {
     rows.push(metaRow("Timezone", String(revision.timezone).replaceAll("_", " ")));
   }
-  if (revision.recurrence_rule) {
-    rows.push(metaRow("Repeats", revision.recurrence_rule));
-  }
-  if (revision.recurrence_dates && revision.recurrence_dates.length > 0) {
-    rows.push(
-      metaRow(
-        "Changed dates",
-        revision.recurrence_dates
-          .map((item) => `${item.local_start} (${item.kind})`)
-          .join(", ")
-      )
-    );
-  }
+  const recurrence = recurrenceText(revision);
+  if (recurrence) rows.push(metaRow("Recurrence", recurrence));
+  rows.push(metaRow("Status", revision.approval_status));
   document.querySelector("#review-detail-meta").replaceChildren(...rows);
-  document.querySelector("#review-detail-description").textContent =
-    revision.description || "";
+  document.querySelector("#review-detail-description").textContent = revision.description || "";
   const link = document.querySelector("#review-detail-link");
   let safeUrl = null;
   try {
@@ -1759,102 +2375,71 @@ function renderReviewDetail(revision) {
   }
   link.hidden = !safeUrl;
   if (safeUrl) link.href = safeUrl;
-  const submitterRows = [
-    metaRow("Submitted by", revision.submitted_by_name || "Unknown"),
+
+  const history = document.querySelector("#review-detail-history");
+  history.replaceChildren();
+  const prior = (detail.revisions || []).filter((item) => item.id !== revision.id);
+  if (prior.length > 0) {
+    const heading = document.createElement("h3");
+    heading.className = "review-history-heading";
+    heading.textContent = "Earlier revisions";
+    history.append(heading);
+    for (const item of prior) {
+      const entry = document.createElement("p");
+      entry.className = "review-history-entry";
+      const reviewer = item.reviewed_by ? ` by ${item.reviewed_by}` : "";
+      const at = item.reviewed_at ? ` on ${formatSubmittedAt(item.reviewed_at)}` : "";
+      const note = item.review_note ? ` — ${item.review_note}` : "";
+      entry.textContent =
+        `Revision ${item.revision_number} · ${item.approval_status}${reviewer}${at}${note}`;
+      history.append(entry);
+    }
+  }
+}
+
+async function moderateReview(eventId, revisionId, action) {
+  if (!isAdminSignedIn()) return;
+  const note = document.querySelector("#review-note")
+    && reviewDetailDialog.open
+    && reviewDetail
+    && reviewDetail.eventId === eventId
+    ? document.querySelector("#review-note").value.trim()
+    : "";
+  const buttons = [
+    ...reviewQueueDialog.querySelectorAll("button"),
+    ...reviewDetailDialog.querySelectorAll("button"),
   ];
-  const contact = [revision.submitted_by_channel, revision.submitted_by_contact]
-    .filter(Boolean)
-    .join(" · ");
-  if (contact) submitterRows.push(metaRow("Submitter contact", contact));
-  document.querySelector("#review-detail-submitter").replaceChildren(...submitterRows);
-  document.querySelector("#review-note").value = "";
-  document.querySelector("#review-detail-error").textContent = "";
-}
-
-async function openReviewDetail(eventId, revisionId) {
-  const error = document.querySelector("#review-detail-error");
-  error.textContent = "";
+  for (const button of buttons) button.disabled = true;
+  setReviewQueueError("");
+  setReviewDetailError("");
   try {
-    const audit = await jsonRequest(`/api/v1/admin/events/${eventId}`, {
-      headers: authenticatedHeaders(),
-    });
-    const revisions = audit.revisions || [];
-    const revision = revisions.find((item) => String(item.id) === String(revisionId)) ||
-      revisions.find((item) => String(item.id) === String(audit.current_revision_id)) ||
-      revisions[0];
-    if (!revision) throw new Error("That submission is no longer available.");
-    reviewDetailSelection = { eventId, revisionId: revision.id };
-    renderReviewDetail(revision);
-    if (!reviewDetailDialog.open) reviewDetailDialog.showModal();
-  } catch (loadError) {
-    if (loadError.status === 401 && isAdminSignedIn()) {
-      signOutAfterAuthFailure(loadError.message);
-    }
-    const status = document.querySelector("#review-queue-status");
-    status.textContent = loadError.message;
-  }
-}
-
-async function decideReview(decision) {
-  const { eventId, revisionId } = reviewDetailSelection;
-  const error = document.querySelector("#review-detail-error");
-  const approveButton = document.querySelector("#review-approve-button");
-  const rejectButton = document.querySelector("#review-reject-button");
-  if (!eventId || !revisionId) {
-    error.textContent = "Select a submission from the queue first.";
-    return;
-  }
-  error.textContent = "";
-  approveButton.disabled = true;
-  rejectButton.disabled = true;
-  try {
+    const body = { actor: adminDisplayName() };
+    if (note) body.note = note;
     await jsonRequest(
-      `/api/v1/admin/events/${eventId}/revisions/${revisionId}/${decision}`,
-      {
-        method: "POST",
-        headers: { ...authenticatedHeaders(), "Content-Type": "application/json" },
-        body: JSON.stringify({
-          actor: adminActor(),
-          note: document.querySelector("#review-note").value.trim() || null,
-        }),
-      }
+      `/api/v1/admin/events/${eventId}/revisions/${revisionId}/${action}`,
+      { method: "POST", headers: { ...reviewQueueHeaders(), "Content-Type": "application/json" }, body: JSON.stringify(body) }
     );
-    reviewDetailSelection = { eventId: null, revisionId: null };
-    reviewDetailDialog.close();
-    // An approval publishes the event, so refresh the calendar every viewer sees.
-    loadMonth();
-    await loadReviewQueue();
-  } catch (requestError) {
-    if (requestError.status === 401 && isAdminSignedIn()) {
-      signOutAfterAuthFailure(requestError.message);
+    if (reviewDetail && reviewDetail.eventId === eventId && reviewDetailDialog.open) {
+      reviewDetailDialog.close();
     }
-    error.textContent = requestError.message;
+    reviewDetail = null;
+    await refreshReviewQueue();
+    // An approval publishes new occurrences; reload the calendar so the
+    // event appears for every viewer immediately.
+    loadMonth();
+  } catch (error) {
+    const authMessage = handleReviewAuthError(error);
+    const message = authMessage || error.message;
+    if (reviewDetailDialog.open) setReviewDetailError(message);
+    else setReviewQueueError(message);
   } finally {
-    approveButton.disabled = false;
-    rejectButton.disabled = false;
+    for (const button of buttons) button.disabled = false;
   }
 }
 
-function approveRevision() {
-  return decideReview("approve");
-}
-
-function rejectRevision() {
-  return decideReview("reject");
-}
-
-function editReviewSubmission() {
-  const { eventId } = reviewDetailSelection;
-  if (!eventId) {
-    document.querySelector("#review-detail-error").textContent =
-      "Select a submission from the queue first.";
-    return;
-  }
-  reviewDetailSelection = { eventId: null, revisionId: null };
+async function editReviewSubmission(eventId) {
   if (reviewDetailDialog.open) reviewDetailDialog.close();
-  if (reviewQueueDialog.open) reviewQueueDialog.close();
-  // The admin event editor publishes on save, completing the approval.
-  openEditEventForm(eventId);
+  await openEditEventForm(eventId, null, { stayPending: true });
 }
 
 function consumeManagementHash() {
@@ -1913,17 +2498,26 @@ function bindControls() {
     updateAdminUi();
     adminDialog.showModal();
   });
+  document.querySelector("#review-queue-button").addEventListener("click", openReviewQueue);
+  document.querySelector("#copy-event-link-button").addEventListener("click", copyEventLink);
+  document.querySelector("#edit-event-button").addEventListener("click", editEventFromDetail);
+  document.querySelector("#review-event-edit-button").addEventListener("click", reviewEventFromDetail);
+  document.querySelector("#unpublish-event-button").addEventListener("click", unpublishEventFromDetail);
+  eventDialog.addEventListener("close", closeEventDetail);
+  document.querySelector("#review-approve-button").addEventListener("click", () => {
+    if (reviewDetail) moderateReview(reviewDetail.eventId, reviewDetail.revisionId, "approve");
+  });
+  document.querySelector("#review-reject-button").addEventListener("click", () => {
+    if (!reviewDetail) return;
+    if (window.confirm("Reject this submission? It will stay off the public calendar.")) {
+      moderateReview(reviewDetail.eventId, reviewDetail.revisionId, "reject");
+    }
+  });
+  document.querySelector("#review-edit-button").addEventListener("click", () => {
+    if (reviewDetail) editReviewSubmission(reviewDetail.eventId);
+  });
   document.querySelector("#admin-login-form").addEventListener("submit", adminLogin);
   document.querySelector("#admin-logout").addEventListener("click", adminLogout);
-  document.querySelector("#review-queue-button").addEventListener("click", openReviewQueue);
-  document.querySelector("#review-back-button").addEventListener("click", () => {
-    if (reviewDetailDialog.open) reviewDetailDialog.close();
-    if (isAdminSignedIn() && !reviewQueueDialog.open) reviewQueueDialog.showModal();
-    loadReviewQueue();
-  });
-  document.querySelector("#review-approve-button").addEventListener("click", approveRevision);
-  document.querySelector("#review-reject-button").addEventListener("click", rejectRevision);
-  document.querySelector("#review-edit-button").addEventListener("click", editReviewSubmission);
   document.querySelectorAll("[data-close]").forEach((button) => {
     button.addEventListener("click", () => document.querySelector(`#${button.dataset.close}`).close());
   });
@@ -1946,4 +2540,6 @@ renderCalendar();
 loadMonth();
 if (managementRequest) {
   openEditEventForm(managementRequest.eventId, managementRequest.token);
+} else {
+  openEventFromUrl();
 }

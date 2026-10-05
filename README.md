@@ -58,6 +58,15 @@ events. A marker shows the current time when today is visible. The view and
 date live in the URL (`?view=week&date=2026-10-07`), so refreshing or sharing
 the link lands back in the same place.
 
+Select any event to open its detail view: the full schedule, location,
+description, website, and groups/tags. Repeating events also show the series in
+plain language (for example "Every week on Tuesday · 12 times"), added and
+skipped dates, previous/next date navigation, and the upcoming dates. Viewers
+can copy a link to the event, and its creator can edit it. Signed-in admins
+also see moderation details (submitter, approval, any pending edit awaiting
+review) and can edit, review a pending edit, or unpublish. The open event lives in the URL
+(`?event=…&occurrence=…`), so the link opens straight to that event and date.
+
 When link access is enabled, open the UI with the private token in the URL:
 
 ```text

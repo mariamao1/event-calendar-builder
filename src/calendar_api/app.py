@@ -439,9 +439,12 @@ def create_app(
             return service.get_editable_event(connection, event_id)
 
     @app.get("/api/v1/events/{event_id}", dependencies=[link])
-    def event(event_id: UUID) -> dict:
+    def event(event_id: UUID, occurrence: UUID | None = None) -> dict:
+        """One published event; `occurrence` selects a date of its series."""
         with database.connection() as connection:
-            return service.get_published_event(connection, event_id)
+            return service.get_published_event(
+                connection, event_id, occurrence_id=occurrence
+            )
 
     @app.get("/api/v1/calendar", dependencies=[link])
     def calendar(

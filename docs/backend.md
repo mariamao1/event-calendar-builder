@@ -84,7 +84,7 @@ Public routes:
 | `GET` | `/health` | Database readiness |
 | `GET` | `/api/v1/groups` | Active filter groups |
 | `GET` | `/api/v1/calendar` | Published occurrences in a range |
-| `GET` | `/api/v1/events/{event_id}` | One published event |
+| `GET` | `/api/v1/events/{event_id}` | One published event; `?occurrence=` adds that date and series context |
 | `POST` | `/api/v1/events` | Submit revision 1 for review |
 | `GET` | `/api/v1/events/{event_id}/manage` | Load creator-owned editable content |
 | `POST` | `/api/v1/events/{event_id}/revisions` | Submit a creator-owned edit for review |
@@ -104,6 +104,15 @@ Admin routes (require admin authentication, see below):
 | `POST` | `/api/v1/admin/events/{event_id}/revisions/{revision_id}/approve` | Publish atomically |
 | `POST` | `/api/v1/admin/events/{event_id}/revisions/{revision_id}/reject` | Reject while retaining prior publication |
 | `POST` | `/api/v1/admin/events/{event_id}/revoke` | Unpublish and cancel future occurrences |
+
+The single-event read powers the event detail view. Besides the published
+revision and its active groups it returns `recurrence_dates` and `occurrence`
+(the requested scheduled date, or `null` if none was requested or it is no
+longer scheduled). It also returns `series`, which is `null` for one-off events.
+For repeating events, `series` holds the `previous`/`next` scheduled dates
+around the requested one, up to six `upcoming` dates with `upcoming_count`, and
+`coverage_end`, where the materialized window ends. Submitter details are never
+included.
 
 Creating an event returns a one-time `management_token`. Creator reads and edits
 send it in `X-Event-Management-Token`; only its SHA-256 digest is stored. The

@@ -972,7 +972,103 @@ def calendar_occurrences(
     return items, has_more
 
 
-def get_published_event(connection: sqlite3.Connection, event_id: UUID) -> dict:
+_SERIES_UPCOMING_LIMIT = 6
+_OCCURRENCE_FIELDS = """
+    id AS occurrence_id, recurrence_id, is_exception, is_all_day, starts_at,
+    ends_at, start_date, end_date, timezone
+"""
+# Timed and all-day values never mix within one event's scheduled rows, so
+# the ISO strings order chronologically; the id breaks exact ties.
+_OCCURRENCE_KEY = "coalesce(starts_at, start_date)"
+
+
+def _occurrence(row: sqlite3.Row | None) -> dict | None:
+    if row is None:
+        return None
+    result = dict(row)
+    result["is_exception"] = bool(result["is_exception"])
+    result["is_all_day"] = bool(result["is_all_day"])
+    return result
+
+
+def _series_context(
+    connection: sqlite3.Connection,
+    event_id: str,
+    selected: dict | None,
+    now: datetime,
+) -> dict:
+    """Neighbouring and upcoming scheduled dates of a recurring event.
+
+    Only materialized occurrences are visible, so counts and lists are bounded
+    by the rolling window that ends at `coverage_end`.
+    """
+    previous = following = None
+    if selected is not None:
+        key = selected["starts_at"] or selected["start_date"]
+        params = (event_id, key, selected["occurrence_id"])
+        previous = _occurrence(connection.execute(
+            f"""
+            SELECT {_OCCURRENCE_FIELDS} FROM event_occurrences
+             WHERE event_id = ? AND status = 'scheduled'
+               AND ({_OCCURRENCE_KEY}, id) < (?, ?)
+             ORDER BY {_OCCURRENCE_KEY} DESC, id DESC LIMIT 1
+            """,
+            params,
+        ).fetchone())
+        following = _occurrence(connection.execute(
+            f"""
+            SELECT {_OCCURRENCE_FIELDS} FROM event_occurrences
+             WHERE event_id = ? AND status = 'scheduled'
+               AND ({_OCCURRENCE_KEY}, id) > (?, ?)
+             ORDER BY {_OCCURRENCE_KEY}, id LIMIT 1
+            """,
+            params,
+        ).fetchone())
+    not_ended = """
+        event_id = ? AND status = 'scheduled'
+        AND ((is_all_day = 0 AND ends_at > ?) OR (is_all_day = 1 AND end_date > ?))
+    """
+    not_ended_params = (event_id, _timestamp(now), now.date().isoformat())
+    upcoming = connection.execute(
+        f"""
+        SELECT {_OCCURRENCE_FIELDS} FROM event_occurrences
+         WHERE {not_ended} ORDER BY {_OCCURRENCE_KEY}, id LIMIT ?
+        """,
+        (*not_ended_params, _SERIES_UPCOMING_LIMIT),
+    ).fetchall()
+    upcoming_count = connection.execute(
+        f"SELECT count(*) FROM event_occurrences WHERE {not_ended}",
+        not_ended_params,
+    ).fetchone()[0]
+    coverage = connection.execute(
+        """
+        SELECT window_end_exclusive FROM event_occurrence_materializations
+         WHERE event_id = ?
+        """,
+        (event_id,),
+    ).fetchone()
+    return {
+        "previous": previous,
+        "next": following,
+        "upcoming": [_occurrence(item) for item in upcoming],
+        "upcoming_count": upcoming_count,
+        "coverage_end": coverage["window_end_exclusive"] if coverage else None,
+    }
+
+
+def get_published_event(
+    connection: sqlite3.Connection,
+    event_id: UUID,
+    *,
+    occurrence_id: UUID | None = None,
+    now: datetime | None = None,
+) -> dict:
+    """Return a published event with its occurrence and series context.
+
+    `occurrence` is the requested scheduled date, or null when none was asked
+    for or it is no longer scheduled. `series` is null for one-off events.
+    """
+    now = now or _now()
     row = connection.execute(
         """
         SELECT e.id AS event_id, r.id AS event_revision_id, r.revision_number,
@@ -1003,6 +1099,27 @@ def get_published_event(connection: sqlite3.Connection, event_id: UUID) -> dict:
     result["is_all_day"] = bool(result["is_all_day"])
     result["groups"] = _groups_for_revision(
         connection, result["event_revision_id"], active_only=True
+    )
+    result["recurrence_dates"] = _recurrence_dates(
+        connection, result["event_revision_id"]
+    )
+    selected = None
+    if occurrence_id is not None:
+        selected = _occurrence(connection.execute(
+            f"""
+            SELECT {_OCCURRENCE_FIELDS} FROM event_occurrences
+             WHERE id = ? AND event_id = ? AND status = 'scheduled'
+            """,
+            (str(occurrence_id), str(event_id)),
+        ).fetchone())
+    result["occurrence"] = selected
+    is_recurring = bool(result["recurrence_rule"]) or any(
+        item["kind"] == "include" for item in result["recurrence_dates"]
+    )
+    result["series"] = (
+        _series_context(connection, str(event_id), selected, now)
+        if is_recurring
+        else None
     )
     return result
 

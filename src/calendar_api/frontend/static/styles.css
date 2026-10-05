@@ -972,12 +972,31 @@ dialog::backdrop {
 }
 
 .event-detail-actions {
+  flex-wrap: wrap;
   justify-content: flex-end;
   margin-top: 20px;
 }
 
-.event-detail-actions:has(button[hidden]) {
+.event-detail-actions[hidden] {
   display: none;
+}
+
+.event-actions-spacer {
+  flex: 1 1 auto;
+}
+
+.danger-button {
+  color: #9c3a24;
+}
+
+.danger-button:hover {
+  border-color: #e7b3a5;
+  background: var(--coral-soft);
+}
+
+.danger-button:disabled {
+  cursor: wait;
+  opacity: 0.62;
 }
 
 .form-dialog {
@@ -1012,6 +1031,17 @@ dialog::backdrop {
 .admin-dialog-surface {
   width: min(94vw, 440px);
   padding: 27px;
+}
+
+/* The dialog element itself is what the browser centers, so size it to
+   match its card. Otherwise the narrower card sits left-aligned inside a
+   wider invisible dialog and the popup looks off-center. */
+#admin-dialog {
+  width: min(94vw, 440px);
+}
+
+#review-queue-dialog {
+  width: min(94vw, 720px);
 }
 
 .form-dialog-header {
@@ -1315,9 +1345,7 @@ dialog::backdrop {
 #admin-login-form[hidden],
 #admin-signed-in[hidden],
 #edit-event-button[hidden],
-#management-link-wrap[hidden],
-#review-queue-button[hidden],
-#review-queue-count[hidden] {
+#management-link-wrap[hidden] {
   display: none;
 }
 
@@ -1700,118 +1728,123 @@ dialog::backdrop {
   background: var(--coral);
 }
 
-/* ---- Admin review queue ---- */
-
 .review-count {
-  display: inline-grid;
-  place-items: center;
+  display: inline-block;
   min-width: 22px;
-  height: 22px;
-  margin-left: 8px;
-  padding: 0 6px;
+  padding: 2px 7px;
   border-radius: 999px;
   color: #fff;
   background: var(--coral);
   font-size: 0.68rem;
   font-weight: 800;
-  line-height: 1;
+  text-align: center;
+}
+
+.review-count:empty {
+  display: none;
 }
 
 .review-queue-surface {
-  width: min(94vw, 640px);
-}
-
-.review-status {
-  margin: 14px 0 0;
-  color: var(--muted);
-  font-size: 0.8rem;
-  font-weight: 600;
+  width: min(94vw, 720px);
 }
 
 .review-queue-list {
   display: flex;
   flex-direction: column;
-  gap: 9px;
-  margin-top: 16px;
+  gap: 12px;
+  margin-top: 18px;
 }
 
-.review-empty {
-  margin: 0;
-  padding: 18px 14px;
-  border: 1px dashed var(--line);
-  border-radius: 13px;
+.review-queue-empty {
+  margin: 6px 0 0;
   color: var(--muted);
-  background: #faf8f2;
-  font-size: 0.82rem;
-  text-align: center;
+  font-size: 0.83rem;
 }
 
 .review-card {
-  display: grid;
-  grid-template-columns: 5px minmax(0, 1fr) auto;
-  gap: 13px;
-  align-items: center;
-  width: 100%;
-  padding: 13px 14px 13px 0;
-  overflow: hidden;
+  padding: 15px 16px;
   border: 1px solid var(--soft-line);
   border-radius: 13px;
   background: #fdfbf5;
-  cursor: pointer;
-  text-align: left;
 }
 
-.review-card:hover {
-  border-color: #cfd8d3;
-  background: #f7f5ed;
+.review-card-title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 850;
+  letter-spacing: -0.01em;
 }
 
-.review-actions {
+.review-card-meta {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 0.74rem;
+  line-height: 1.5;
+}
+
+.review-card-description {
+  display: -webkit-box;
+  margin: 9px 0 0;
+  overflow: hidden;
+  color: #44504b;
+  font-size: 0.8rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.review-card-groups {
+  margin-top: 10px;
+}
+
+.review-card-actions {
   display: flex;
-  gap: 10px;
-  align-items: center;
-  margin-top: 22px;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
 }
 
-.review-actions-spacer {
-  flex: 1;
+.review-submitter {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 0.78rem;
 }
 
-.approve-button,
-.reject-button {
-  min-height: 39px;
-  padding: 0 15px;
-  border-radius: 11px;
-  cursor: pointer;
-  font-size: 0.76rem;
+.review-history {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--soft-line);
+}
+
+.review-history-heading {
+  margin: 0 0 8px;
+  font-size: 0.72rem;
   font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
 }
 
-.approve-button {
-  border: 1px solid var(--forest);
-  color: #fff;
-  background: var(--forest);
+.review-history-entry {
+  margin: 6px 0 0;
+  color: #44504b;
+  font-size: 0.78rem;
+  line-height: 1.5;
 }
 
-.approve-button:hover {
-  background: #21614f;
+.review-note-label {
+  margin-top: 18px;
 }
 
-.reject-button {
-  border: 1px solid #d8b3a6;
-  color: #74301f;
-  background: #fae4dc;
+.review-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 20px;
 }
 
-.reject-button:hover {
-  background: #f5d5c8;
-}
-
-.approve-button:disabled,
-.reject-button:disabled {
-  cursor: wait;
-  opacity: 0.62;
-}
 
 @media (max-width: 820px) {
   .calendar-actions {
@@ -1838,5 +1871,210 @@ dialog::backdrop {
 
   .hour-label {
     padding-right: 5px;
+  }
+}
+
+/* Event detail view */
+.event-detail-dialog {
+  width: min(94vw, 580px);
+}
+
+.event-detail-dialog .dialog-header .eyebrow {
+  margin: 10px 0 0;
+}
+
+.event-dialog-surface[aria-busy="true"] .event-series,
+.event-dialog-surface[aria-busy="true"] .event-admin-panel {
+  opacity: 0.55;
+}
+
+.event-detail-status {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.event-detail-status:empty {
+  display: none;
+}
+
+.event-meta[hidden] {
+  display: none;
+}
+
+.event-meta dd .event-group-list {
+  min-height: 0;
+}
+
+.event-series,
+.event-admin-panel {
+  margin-top: 22px;
+  padding: 16px 17px;
+  border: 1px solid var(--soft-line);
+  border-radius: 14px;
+  background: #fdfbf5;
+}
+
+.event-admin-panel {
+  border-style: dashed;
+  border-color: #d5d7d0;
+}
+
+.event-section-heading,
+.series-list-heading {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.event-series-summary {
+  margin: 7px 0 0;
+  font-size: 0.92rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.event-series-meta {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0 0;
+}
+
+.event-series-meta .event-meta-row {
+  grid-template-columns: 84px 1fr;
+}
+
+.event-series-meta dt {
+  color: var(--muted);
+  font-size: 0.66rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.event-series-meta dd {
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 600;
+  line-height: 1.45;
+  white-space: pre-line;
+}
+
+.series-nav {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.series-nav[hidden] {
+  display: none;
+}
+
+.series-step {
+  flex: 1;
+  min-height: 34px;
+}
+
+.series-step:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.series-list-heading {
+  margin-top: 16px;
+}
+
+.series-dates {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.series-date {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  padding: 8px 11px;
+  border: 1px solid var(--soft-line);
+  border-radius: 10px;
+  color: var(--ink);
+  background: var(--paper);
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 650;
+  text-align: left;
+}
+
+.series-date:hover {
+  border-color: #b9c7c1;
+  background: var(--forest-soft);
+}
+
+.series-date.is-current {
+  border-color: var(--forest);
+  color: var(--forest);
+  background: var(--forest-soft);
+  font-weight: 800;
+}
+
+.series-date-tag {
+  margin-left: auto;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: #624711;
+  background: #f4e7c7;
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.series-more,
+.event-footnote {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 0.74rem;
+  line-height: 1.5;
+}
+
+.series-more:empty,
+.event-footnote:empty {
+  display: none;
+}
+
+.event-admin-pending {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  color: #624711;
+  background: #f4e7c7;
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.event-admin-pending[hidden],
+.event-share-fallback[hidden] {
+  display: none;
+}
+
+.event-share-fallback {
+  margin-top: 14px;
+}
+
+@media (max-width: 520px) {
+  .event-actions-spacer {
+    display: none;
+  }
+
+  .event-detail-actions > button {
+    flex: 1 1 auto;
   }
 }
