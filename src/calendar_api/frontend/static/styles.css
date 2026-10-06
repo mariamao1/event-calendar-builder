@@ -2270,3 +2270,50 @@ dialog::backdrop {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* Scope choice for edits/removals of a repeating event: one date, that date
+   and later ones, or the whole series. */
+.scope-options {
+  display: grid;
+  gap: 10px;
+  margin: 14px 0 6px;
+}
+
+.scope-option {
+  align-items: flex-start;
+  width: auto;
+}
+
+.scope-option input {
+  margin-top: 2px;
+}
+
+.scope-hint {
+  display: block;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 500;
+  line-height: 1.45;
+}
+
+.scope-footer {
+  margin-top: 14px;
+}
+
+.scope-note {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--soft-line);
+  border-radius: 10px;
+  background: #faf8f2;
+}
+
+.series-date-tag.is-cancelled-tag {
+  background: #f6d9d2;
+  color: #74301f;
+}
+
+.series-date-tag.is-modified-tag {
+  background: #dfe9f2;
+  color: #244b5d;
+}

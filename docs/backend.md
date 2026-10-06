@@ -112,9 +112,12 @@ Public routes:
 | `GET` | `/api/v1/events/{event_id}` | One published event; `?occurrence=` adds that date and series context |
 | `POST` | `/api/v1/events` | Submit revision 1 for review |
 | `GET` | `/api/v1/events/{event_id}/manage` | Load creator-owned editable content |
-| `POST` | `/api/v1/events/{event_id}/revisions` | Submit a creator-owned edit for review |
-| `POST` | `/api/v1/events/{event_id}/cancel` | Cancel an event (creator or admin); it stays visible, marked cancelled |
-| `DELETE` | `/api/v1/events/{event_id}` | Delete an event (creator or admin); it no longer exists |
+| `POST` | `/api/v1/events/{event_id}/revisions` | Submit a creator-owned edit for review (or a scoped edit; see below) |
+| `POST` | `/api/v1/events/{event_id}/cancel` | Cancel an event (creator or admin); it stays visible, marked cancelled (or a scoped cancel; see below) |
+| `DELETE` | `/api/v1/events/{event_id}` | Delete an event (creator or admin); it no longer exists (or a scoped delete; see below) |
+| `POST` | `/api/v1/events/{event_id}/occurrences/{occurrence_id}/edit` | Edit one date (`scope=single`, default) or future dates (`scope=future`) |
+| `POST` | `/api/v1/events/{event_id}/occurrences/{occurrence_id}/cancel` | Cancel one date or future dates, kept visible, marked cancelled |
+| `DELETE` | `/api/v1/events/{event_id}/occurrences/{occurrence_id}` | Delete one date or future dates from the calendar |
 
 Admin routes (require admin authentication, see below):
 
@@ -153,6 +156,58 @@ creator reads (all report it as missing). Both operations require either admin
 authentication or the event creator's `X-Event-Management-Token`; cancelling an
 already-cancelled event reports `409`, and any operation on a deleted event
 reports `404`.
+
+## Scoped edits and removals of recurring events
+
+Editing, cancelling, or deleting a date of a repeating event asks which dates
+the change applies to:
+
+- `single` — only the selected occurrence changes. Other dates stay exactly
+  as they are.
+- `future` — the selected occurrence and every later one change. Earlier
+  dates keep their materialized timing and content.
+- `series` — the entire series changes (the default, preserving old behavior).
+
+The scope travels as `scope` with the targeted `occurrence` (an occurrence
+id) in the query string (`?scope=single&occurrence=…`), in the JSON body
+(`scope` plus `occurrence_id`), or — for the dedicated occurrence routes —
+in the URL path. Scope names accept common aliases (`this`, `occurrence`,
+`instance` for `single`; `this_and_future`, `following` for `future`; `all`,
+`entire_series` for `series`). A `single`/`future` scope without an occurrence
+reports `422`, as does scoping a one-off event. Scoped edit payloads carry
+content and timing but no repeat pattern of their own — omit `recurrence_rule`
+and `recurrence_dates` (the form does this for you); anything sent there is
+ignored, since the server reuses the published schedule, so echoing the
+series schedule back can never read as a pattern change.
+
+Mechanics:
+
+- A `single` edit rewrites one occurrence in place (its `recurrence_id` keeps
+  identifying the original slot) and stores divergent descriptive content as
+  a per-occurrence override that reads merge over the published revision.
+  The edit payload carries content and timing; group changes belong to a
+  series-wide edit (`422` otherwise). It applies immediately for any
+  authorized editor (admin or the event creator), like cancellation and
+  deletion.
+- A `future` edit keeps the published pattern and moves content, timing, and
+  groups forward from the target date: it mints a new approved revision and
+  reconciles only occurrences at or after that date, freezing changed content
+  onto earlier dates so they keep showing what viewers saw. Changing the
+  pattern, the timezone, or the timed/all-day shape still requires a
+  series-wide edit. It refuses with `409` while a pending edit awaits review.
+- A `single` cancel flags one date (`is_cancelled`) while the series stays
+  published; a `single` delete removes that date from the calendar. `future`
+  cancel/delete truncate the series rule before the target date (a `COUNT`
+  becomes an `UNTIL` on the last kept day) and mark or remove every later
+  date. Targeting the first date falls back to the whole-series removal.
+- A later series-wide edit refreshes every retained occurrence and clears
+  per-occurrence overrides and flags, so the latest change to the series
+  always persists over earlier single/future exceptions. The calendar and
+  detail views expose diverged dates via `has_override` (and per-date
+  `is_cancelled`), and the UI marks them Modified/Cancelled in the series
+  list. Scoped cancellations and deletions record `cancel`/`delete` review
+  actions; single-date edits bump the occurrence version against the published
+  revision.
 
 Creating an event returns a one-time `management_token`. Creator reads and edits
 send it in `X-Event-Management-Token`; only its SHA-256 digest is stored. The

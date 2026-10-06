@@ -83,7 +83,21 @@ occurrence a durable foreign-key target.
 `recurrence_id` is the occurrence's original wall-clock slot in the event
 timezone. It is stable when one occurrence is rescheduled; actual start/end can
 change and `is_exception` becomes true. A non-recurring event keeps its sole
-occurrence row across approved edits. When an approved revision changes:
+occurrence row across approved edits.
+
+Scoped single/future edits diverge individual occurrences from the published
+series. `event_occurrences.content_override` holds a JSON object with any
+subset of the descriptive fields (`title`, `description`, `location_name`,
+`location_address`, `event_url`); reads merge it over the published revision
+and report diverged dates via `has_override`. Timing divergence reuses the
+per-occurrence start/end columns with `is_exception`. A scoped cancellation
+sets `event_occurrences.instance_cancelled` instead: the date stays visible,
+flagged as cancelled (scoped deletion instead flips the row to `cancelled`).
+A later series-wide approval refreshes retained rows and clears both columns,
+so the latest change to the series always persists over earlier exceptions.
+Groups stay series-level: group changes ride on revisions, never on overrides.
+
+When an approved revision changes:
 
 - reconcile rows by `(event_id, recurrence_id)`;
 - update retained rows from the new revision and increment `version` for every

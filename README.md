@@ -15,6 +15,7 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/001_initial_schema.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/002_event_management_tokens.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/003_optional_event_contact.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/004_event_cancellation.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/005_occurrence_overrides.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/tests/001_initial_schema_smoke.sql
 ```
 
@@ -70,7 +71,10 @@ Select any event to open its detail view: the full schedule, location,
 description, website, and groups/tags. Repeating events also show the series in
 plain language (for example "Every week on Tuesday · 12 times"), added and
 skipped dates, previous/next date navigation, and the upcoming dates. Viewers
-can copy a link to the event, and its creator can edit it. Signed-in admins
+can copy a link to the event, and its creator can edit it. Editing, cancelling,
+or deleting a date of a repeating event asks whether the change applies to
+only that date, that date and all later ones, or the entire series; a later
+change to the series replaces earlier per-date changes. Signed-in admins
 also see moderation details (submitter, approval, any pending edit awaiting
 review) and can edit, review a pending edit, or unpublish. The event's creator
 or an admin can cancel the event (it stays visible, marked cancelled) or

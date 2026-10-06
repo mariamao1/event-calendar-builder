@@ -178,6 +178,31 @@
       </div>
     </dialog>
 
+    <dialog id="scope-dialog" class="form-dialog" aria-labelledby="scope-title">
+      <div class="dialog-surface compact-dialog">
+        <div class="dialog-header form-dialog-header">
+          <div>
+            <p class="eyebrow">Repeating event</p>
+            <h2 id="scope-title">Edit repeating event</h2>
+            <p id="scope-description" class="form-intro"></p>
+          </div>
+          <button class="icon-close" type="button" data-close="scope-dialog" aria-label="Close scope choice">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" /></svg>
+          </button>
+        </div>
+        <div class="scope-options" role="radiogroup" aria-label="Choose what to change">
+          <label class="check-row scope-option"><input type="radio" name="scope-choice" value="single" checked /> <span>Only this occurrence<small id="scope-single-hint" class="scope-hint"></small></span></label>
+          <label class="check-row scope-option"><input type="radio" name="scope-choice" value="future" /> <span>This and all future occurrences<small id="scope-future-hint" class="scope-hint"></small></span></label>
+          <label class="check-row scope-option"><input type="radio" name="scope-choice" value="series" /> <span>Entire series<small class="scope-hint">Every date in the series, past and future.</small></span></label>
+        </div>
+        <p class="field-help">A later change to the series replaces earlier per-date changes.</p>
+        <div class="form-footer-actions scope-footer">
+          <button class="quiet-button" type="button" data-close="scope-dialog">Back</button>
+          <button class="primary-button" id="scope-confirm" type="button">Continue</button>
+        </div>
+      </div>
+    </dialog>
+
     <dialog id="admin-dialog" class="form-dialog" aria-labelledby="admin-dialog-title">
       <div class="dialog-surface admin-dialog-surface">
         <div class="dialog-header">
@@ -262,6 +287,7 @@
         <form id="event-form" novalidate>
           <input id="event-form-id" type="hidden" />
           <div id="event-form-errors" class="form-error error-summary" role="alert" tabindex="-1"></div>
+          <p id="event-scope-note" class="field-help scope-note" hidden></p>
 
           <fieldset class="form-section">
             <legend>Event details</legend>

@@ -17,6 +17,8 @@ from pydantic import (
     model_validator,
 )
 
+from .errors import ValidationError
+
 NonBlank = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 # These limits reject accidental year/decade-long ranges while still allowing
@@ -118,6 +120,12 @@ class EventRevisionInput(StrictModel):
     recurrence_dates: list[RecurrenceDate] = Field(default_factory=list, max_length=500)
     group_ids: list[UUID] = Field(default_factory=list, max_length=100)
     submitter: Submitter
+    # Scoped edits of a recurring event. These ride alongside the full
+    # revision payload so one form submission carries both the new content
+    # and which occurrences it applies to. They are only honored on the
+    # revision (edit) routes; creation rejects any non-series scope.
+    scope: str | None = None
+    occurrence_id: UUID | None = None
 
     @field_validator("group_ids")
     @classmethod
@@ -207,6 +215,52 @@ class EventRevisionInput(StrictModel):
         return self
 
 
+# Scope of an edit or removal targeting a recurring event:
+# - "single": only the selected occurrence changes.
+# - "future": the selected occurrence and every later one change.
+# - "series": the entire series changes (the default, preserving old behavior).
+_SCOPE_ALIASES = {
+    "single": "single",
+    "this": "single",
+    "this_occurrence": "single",
+    "occurrence": "single",
+    "one": "single",
+    "instance": "single",
+    "future": "future",
+    "this_and_future": "future",
+    "this_and_following": "future",
+    "following": "future",
+    "onward": "future",
+    "onwards": "future",
+    "series": "series",
+    "all": "series",
+    "entire": "series",
+    "entire_series": "series",
+    "whole": "series",
+    "whole_series": "series",
+}
+
+EDIT_SCOPES = ("single", "future", "series")
+
+
+def normalize_scope(value: str | None) -> str:
+    """Map a user-supplied scope to its canonical "single"/"future"/"series".
+
+    Raises a 422 ValidationError for unknown values so callers get a clean
+    API error instead of silently applying the wrong scope.
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return "series"
+    canonical = _SCOPE_ALIASES.get(value.strip().lower().replace("-", "_"))
+    if canonical is None:
+        raise ValidationError(
+            "scope must be one of 'single' (this occurrence only), "
+            "'future' (this and all future occurrences), or 'series' "
+            f"(the entire series); got {value!r}"
+        )
+    return canonical
+
+
 class ReviewInput(StrictModel):
     actor: Annotated[NonBlank, StringConstraints(max_length=160)]
     note: (
@@ -233,3 +287,8 @@ class RemovalInput(BaseModel):
     actor: str | None = None
     note: str | None = None
     reason: str | None = None
+    # Scoped cancellation/deletion of a recurring event. Mirrors the query
+    # parameters of the same names; when both are present the body wins.
+    scope: str | None = None
+    occurrence_id: UUID | None = None
+    occurrence: UUID | None = None

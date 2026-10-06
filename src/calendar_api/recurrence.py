@@ -32,6 +32,41 @@ def _valid_local(naive: datetime, zone: ZoneInfo) -> datetime | None:
     return candidate if round_trip == naive else None
 
 
+def reattach_wall_time(naive: datetime, tzname: str) -> datetime:
+    """Attach an IANA timezone to a naive wall time (fold=0).
+
+    Rejects wall times skipped by a DST transition with a 422
+    ValidationError. Used when a scoped edit moves the series' wall-clock
+    start: the moved start must still exist in the event timezone.
+    """
+    zone = ZoneInfo(tzname)
+    candidate = _valid_local(naive.replace(microsecond=0), zone)
+    if candidate is None:
+        raise ValidationError(
+            f"{naive.isoformat()} does not exist in {tzname} "
+            "because of a clock change"
+        )
+    return candidate
+
+
+def truncate_rule_before(rule_text: str, until_token: str) -> str:
+    """Return a copy of an RRULE that ends at `until_token`.
+
+    Any existing COUNT/UNTIL is replaced by `UNTIL=<until_token>`, keeping the
+    pattern (FREQ/INTERVAL/BY*) untouched. Timed series pass a UTC
+    `YYYYMMDDTHHMMSSZ` instant; all-day series pass a `YYYYMMDD` date.
+    """
+    parts = [
+        piece
+        for piece in rule_text.upper().removeprefix("RRULE:").split(";")
+        if piece
+        and not piece.startswith("COUNT=")
+        and not piece.startswith("UNTIL=")
+    ]
+    parts.append(f"UNTIL={until_token}")
+    return ";".join(parts)
+
+
 def _in_window(
     start: datetime | date,
     end: datetime | date,

@@ -101,6 +101,14 @@ CREATE TABLE IF NOT EXISTS event_occurrences (
   end_date TEXT,
   timezone TEXT NOT NULL,
   cancellation_reason TEXT,
+  -- Per-occurrence divergence from the published series, set by scoped
+  -- single/future edits. content_override is a JSON object with any subset
+  -- of {title, description, location_name, location_address, event_url};
+  -- readers merge it over the published revision. instance_cancelled marks
+  -- a scoped cancellation: the date stays visible, flagged as cancelled.
+  -- A later series-wide edit clears both, so the latest series change wins.
+  content_override TEXT,
+  instance_cancelled INTEGER NOT NULL DEFAULT 0 CHECK (instance_cancelled IN (0, 1)),
   materialized_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE (event_id, recurrence_id)

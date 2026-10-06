@@ -80,6 +80,7 @@ class SQLiteDatabase:
             if "cancel_reason" not in event_columns:
                 connection.execute("ALTER TABLE events ADD COLUMN cancel_reason TEXT")
             _migrate_review_actions(connection, schema)
+            _migrate_occurrence_overrides(connection)
             connection.execute(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS
@@ -145,6 +146,26 @@ def _migrate_review_actions(connection: sqlite3.Connection, schema: str) -> None
         PRAGMA foreign_keys = ON;
         """
     )
+
+
+def _migrate_occurrence_overrides(connection: sqlite3.Connection) -> None:
+    """Add per-occurrence scoped-edit columns to older local databases.
+
+    SQLite's CREATE TABLE cannot add fields to an existing table, so a
+    database created before scoped single/future edits gains `content_override`
+    (a JSON object merged over the published revision) and `instance_cancelled`
+    (a scoped cancellation that stays visible) here instead of being recreated.
+    """
+    occurrence_columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(event_occurrences)")
+    }
+    if "content_override" not in occurrence_columns:
+        connection.execute("ALTER TABLE event_occurrences ADD COLUMN content_override TEXT")
+    if "instance_cancelled" not in occurrence_columns:
+        connection.execute(
+            "ALTER TABLE event_occurrences ADD COLUMN instance_cancelled INTEGER "
+            "NOT NULL DEFAULT 0 CHECK (instance_cancelled IN (0, 1))"
+        )
 
 
 def create_database(database_url: str, **kwargs: object) -> Database | SQLiteDatabase:

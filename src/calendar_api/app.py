@@ -28,6 +28,7 @@ from .schemas import (
     LoginInput,
     RemovalInput,
     ReviewInput,
+    normalize_scope,
 )
 from .security import SessionStore, tokens_equal, verify_password
 
@@ -259,6 +260,39 @@ def create_app(
     link = Depends(require_link)
     frontend_dir = Path(__file__).with_name("frontend")
 
+    def resolve_scope(
+        body_scope: str | None,
+        body_occurrence: UUID | None,
+        query_scope: str | None,
+        query_occurrence: UUID | None,
+        *,
+        default: str = "series",
+    ) -> tuple[str, UUID | None]:
+        """Merge body and query scope selectors into one canonical scope.
+
+        The body wins when both are present. "single" (this occurrence only)
+        and "future" (this and all future occurrences) require the targeted
+        occurrence id; "series" (the entire series) is the default.
+        """
+        raw = body_scope if body_scope else (query_scope if query_scope else default)
+        scope = normalize_scope(raw)
+        occurrence = body_occurrence if body_occurrence is not None else query_occurrence
+        if scope in ("single", "future") and occurrence is None:
+            raise ValidationError(
+                f"scope '{scope}' requires the targeted occurrence: pass "
+                "?occurrence=<id> (or occurrence_id in the body)"
+            )
+        return scope, occurrence
+
+    def require_path_occurrence(
+        body_occurrence: UUID | None, path_occurrence: UUID
+    ) -> None:
+        """Reject a body occurrence id that disagrees with the URL path."""
+        if body_occurrence is not None and body_occurrence != path_occurrence:
+            raise ValidationError(
+                "occurrence_id in the body must match the occurrence in the URL"
+            )
+
     # The browser client is kept alongside the API package so a normal
     # `calendar-api serve` command is the only process needed in production.
     app.mount(
@@ -368,6 +402,14 @@ def create_app(
             limit=settings.submit_rate_limit_max,
             window_seconds=settings.submit_rate_limit_window_seconds,
         )
+        if (
+            normalize_scope(payload.scope) != "series"
+            or payload.occurrence_id is not None
+        ):
+            raise ValidationError(
+                "scope and occurrence_id apply to edits of a recurring event, "
+                "not to new submissions"
+            )
         with database.transaction() as connection:
             return service.create_event(connection, payload)
 
@@ -380,6 +422,14 @@ def create_app(
         actor: str = Depends(require_admin),
     ) -> dict:
         """Create and publish an admin-authored event in one transaction."""
+        if (
+            normalize_scope(payload.scope) != "series"
+            or payload.occurrence_id is not None
+        ):
+            raise ValidationError(
+                "scope and occurrence_id apply to edits of a recurring event, "
+                "not to new events"
+            )
         with database.transaction() as connection:
             created = service.create_event(connection, payload)
             approved = service.approve_revision(
@@ -399,15 +449,51 @@ def create_app(
     def post_revision(
         event_id: UUID,
         payload: EventRevisionInput,
+        query_scope: Annotated[str | None, Query(alias="scope")] = None,
+        query_occurrence: Annotated[UUID | None, Query(alias="occurrence")] = None,
+        query_occurrence_id: Annotated[
+            UUID | None, Query(alias="occurrence_id")
+        ] = None,
         x_event_management_token: Annotated[
             str | None, Header(alias="X-Event-Management-Token")
         ] = None,
         x_admin_key: Annotated[str | None, Header()] = None,
         authorization: Annotated[str | None, Header()] = None,
     ) -> dict:
+        """Submit an edit; scoped edits of a recurring event apply at once.
+
+        With `scope=single` (this occurrence only) or `scope=future` (this and
+        all future occurrences) plus the targeted `?occurrence=` id, the edit
+        applies immediately for any authorized editor, like cancellation and
+        deletion. Without a scope the edit targets the entire series and keeps
+        the usual review flow (pending for creators, immediate for admins).
+        """
         require_event_editor(
             event_id, x_event_management_token, x_admin_key, authorization
         )
+        scope, occurrence = resolve_scope(
+            payload.scope,
+            payload.occurrence_id,
+            query_scope,
+            query_occurrence or query_occurrence_id,
+        )
+        if scope != "series":
+            assert occurrence is not None
+            editor = admin_identity(x_admin_key, authorization) or "creator"
+            with database.transaction() as connection:
+                if scope == "single":
+                    return service.edit_single_occurrence(
+                        connection, event_id, occurrence, payload, actor=editor
+                    )
+                return service.edit_future_occurrences(
+                    connection,
+                    event_id,
+                    occurrence,
+                    payload,
+                    actor=editor,
+                    past_days=settings.materialization_past_days,
+                    future_months=settings.materialization_future_months,
+                )
         with database.transaction() as connection:
             return service.create_revision(connection, event_id, payload)
 
@@ -419,8 +505,35 @@ def create_app(
         event_id: UUID,
         payload: EventRevisionInput,
         actor: str = Depends(require_admin),
+        query_scope: Annotated[str | None, Query(alias="scope")] = None,
+        query_occurrence: Annotated[UUID | None, Query(alias="occurrence")] = None,
+        query_occurrence_id: Annotated[
+            UUID | None, Query(alias="occurrence_id")
+        ] = None,
     ) -> dict:
         """Create and immediately publish an admin-authored edit."""
+        scope, occurrence = resolve_scope(
+            payload.scope,
+            payload.occurrence_id,
+            query_scope,
+            query_occurrence or query_occurrence_id,
+        )
+        if scope != "series":
+            assert occurrence is not None
+            with database.transaction() as connection:
+                if scope == "single":
+                    return service.edit_single_occurrence(
+                        connection, event_id, occurrence, payload, actor=actor
+                    )
+                return service.edit_future_occurrences(
+                    connection,
+                    event_id,
+                    occurrence,
+                    payload,
+                    actor=actor,
+                    past_days=settings.materialization_past_days,
+                    future_months=settings.materialization_future_months,
+                )
         with database.transaction() as connection:
             created = service.create_revision(connection, event_id, payload)
             approved = service.approve_revision(
@@ -557,6 +670,11 @@ def create_app(
     def cancel_event(
         event_id: UUID,
         payload: RemovalInput | None = None,
+        query_scope: Annotated[str | None, Query(alias="scope")] = None,
+        query_occurrence: Annotated[UUID | None, Query(alias="occurrence")] = None,
+        query_occurrence_id: Annotated[
+            UUID | None, Query(alias="occurrence_id")
+        ] = None,
         x_event_management_token: Annotated[
             str | None, Header(alias="X-Event-Management-Token")
         ] = None,
@@ -568,24 +686,42 @@ def create_app(
         Cancellation means "this event is cancelled": the published content
         stays on the calendar and in the detail view with `is_cancelled`,
         because people may already have planned around it. Only an admin or
-        the event creator (via `X-Event-Management-Token`) may cancel.
+        the event creator (via `X-Event-Management-Token`) may cancel. For a
+        recurring event, `scope=single` (this occurrence only) or
+        `scope=future` (this and all future occurrences) plus the targeted
+        `?occurrence=` id cancels only those dates instead of the series.
         """
         identity = admin_identity(x_admin_key, authorization)
         actor, note = removal_actor(payload, identity)
+        scope, occurrence = resolve_scope(
+            payload.scope if payload else None,
+            (payload.occurrence_id or payload.occurrence) if payload else None,
+            query_scope,
+            query_occurrence or query_occurrence_id,
+        )
         with database.transaction() as connection:
-            return service.cancel_event(
+            return service.cancel_occurrences(
                 connection,
                 event_id,
+                scope=scope,
+                occurrence_id=occurrence,
                 actor=actor,
                 note=note,
                 is_admin=identity is not None,
                 management_token=x_event_management_token,
+                past_days=settings.materialization_past_days,
+                future_months=settings.materialization_future_months,
             )
 
     @app.delete("/api/v1/events/{event_id}")
     def delete_event(
         event_id: UUID,
         payload: RemovalInput | None = None,
+        query_scope: Annotated[str | None, Query(alias="scope")] = None,
+        query_occurrence: Annotated[UUID | None, Query(alias="occurrence")] = None,
+        query_occurrence_id: Annotated[
+            UUID | None, Query(alias="occurrence_id")
+        ] = None,
         x_event_management_token: Annotated[
             str | None, Header(alias="X-Event-Management-Token")
         ] = None,
@@ -597,18 +733,180 @@ def create_app(
         Deletion means "this event should no longer exist": it leaves the
         calendar, the detail view, the review queue, and creator reads. Only
         an admin or the event creator (via `X-Event-Management-Token`) may
-        delete.
+        delete. For a recurring event, `scope=single` (this occurrence only)
+        or `scope=future` (this and all future occurrences) plus the targeted
+        `?occurrence=` id removes only those dates instead of the series.
         """
         identity = admin_identity(x_admin_key, authorization)
         actor, note = removal_actor(payload, identity)
+        scope, occurrence = resolve_scope(
+            payload.scope if payload else None,
+            (payload.occurrence_id or payload.occurrence) if payload else None,
+            query_scope,
+            query_occurrence or query_occurrence_id,
+        )
         with database.transaction() as connection:
-            return service.delete_event(
+            return service.delete_occurrences(
                 connection,
                 event_id,
+                scope=scope,
+                occurrence_id=occurrence,
                 actor=actor,
                 note=note,
                 is_admin=identity is not None,
                 management_token=x_event_management_token,
+                past_days=settings.materialization_past_days,
+                future_months=settings.materialization_future_months,
+            )
+
+    @app.post("/api/v1/events/{event_id}/occurrences/{occurrence_id}/edit")
+    def edit_occurrence(
+        event_id: UUID,
+        occurrence_id: UUID,
+        payload: EventRevisionInput,
+        query_scope: Annotated[str | None, Query(alias="scope")] = None,
+        x_event_management_token: Annotated[
+            str | None, Header(alias="X-Event-Management-Token")
+        ] = None,
+        x_admin_key: Annotated[str | None, Header()] = None,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> dict:
+        """Edit one date of a recurring event without touching the series.
+
+        Defaults to `scope=single` (this occurrence only); `scope=future`
+        edits this and all future occurrences. The whole series is edited
+        through the revision routes instead (`scope=series` is rejected
+        here). Applies immediately for any authorized editor, like
+        cancellation and deletion.
+        """
+        require_event_editor(
+            event_id, x_event_management_token, x_admin_key, authorization
+        )
+        require_path_occurrence(payload.occurrence_id, occurrence_id)
+        scope, _ = resolve_scope(
+            payload.scope,
+            payload.occurrence_id,
+            query_scope,
+            occurrence_id,
+            default="single",
+        )
+        if scope == "series":
+            raise ValidationError(
+                "the occurrence routes edit one date or future dates; "
+                "edit the entire series through the revision routes"
+            )
+        editor = admin_identity(x_admin_key, authorization) or "creator"
+        with database.transaction() as connection:
+            if scope == "single":
+                return service.edit_single_occurrence(
+                    connection, event_id, occurrence_id, payload, actor=editor
+                )
+            return service.edit_future_occurrences(
+                connection,
+                event_id,
+                occurrence_id,
+                payload,
+                actor=editor,
+                past_days=settings.materialization_past_days,
+                future_months=settings.materialization_future_months,
+            )
+
+    @app.post("/api/v1/events/{event_id}/occurrences/{occurrence_id}/cancel")
+    def cancel_occurrence(
+        event_id: UUID,
+        occurrence_id: UUID,
+        payload: RemovalInput | None = None,
+        query_scope: Annotated[str | None, Query(alias="scope")] = None,
+        x_event_management_token: Annotated[
+            str | None, Header(alias="X-Event-Management-Token")
+        ] = None,
+        x_admin_key: Annotated[str | None, Header()] = None,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> dict:
+        """Cancel one date (`scope=single`, the default) or future dates of a
+        recurring event, keeping each date visible, flagged as cancelled."""
+        require_event_editor(
+            event_id, x_event_management_token, x_admin_key, authorization
+        )
+        identity = admin_identity(x_admin_key, authorization)
+        actor, note = removal_actor(payload, identity)
+        if payload:
+            require_path_occurrence(
+                payload.occurrence_id or payload.occurrence, occurrence_id
+            )
+        scope, _ = resolve_scope(
+            payload.scope if payload else None,
+            (payload.occurrence_id or payload.occurrence) if payload else None,
+            query_scope,
+            occurrence_id,
+            default="single",
+        )
+        if scope == "series":
+            raise ValidationError(
+                "the occurrence routes remove one date or future dates; "
+                "cancel the entire series through the event routes"
+            )
+        with database.transaction() as connection:
+            return service.cancel_occurrences(
+                connection,
+                event_id,
+                scope=scope,
+                occurrence_id=occurrence_id,
+                actor=actor,
+                note=note,
+                is_admin=identity is not None,
+                management_token=x_event_management_token,
+                past_days=settings.materialization_past_days,
+                future_months=settings.materialization_future_months,
+            )
+
+    @app.delete("/api/v1/events/{event_id}/occurrences/{occurrence_id}")
+    def delete_occurrence(
+        event_id: UUID,
+        occurrence_id: UUID,
+        payload: RemovalInput | None = None,
+        query_scope: Annotated[str | None, Query(alias="scope")] = None,
+        x_event_management_token: Annotated[
+            str | None, Header(alias="X-Event-Management-Token")
+        ] = None,
+        x_admin_key: Annotated[str | None, Header()] = None,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> dict:
+        """Delete one date (`scope=single`, the default) or future dates of a
+        recurring event, removing only those dates from the calendar."""
+        require_event_editor(
+            event_id, x_event_management_token, x_admin_key, authorization
+        )
+        identity = admin_identity(x_admin_key, authorization)
+        actor, note = removal_actor(payload, identity)
+        if payload:
+            require_path_occurrence(
+                payload.occurrence_id or payload.occurrence, occurrence_id
+            )
+        scope, _ = resolve_scope(
+            payload.scope if payload else None,
+            (payload.occurrence_id or payload.occurrence) if payload else None,
+            query_scope,
+            occurrence_id,
+            default="single",
+        )
+        if scope == "series":
+            raise ValidationError(
+                "the occurrence routes remove one date or future dates; "
+                "delete the entire series through the event routes"
+            )
+        with database.transaction() as connection:
+            return service.delete_occurrences(
+                connection,
+                event_id,
+                scope=scope,
+                occurrence_id=occurrence_id,
+                actor=actor,
+                note=note,
+                is_admin=identity is not None,
+                management_token=x_event_management_token,
+                past_days=settings.materialization_past_days,
+                future_months=settings.materialization_future_months,
             )
 
     @app.post("/api/v1/admin/events/{event_id}/cancel")
@@ -616,12 +914,31 @@ def create_app(
         event_id: UUID,
         payload: RemovalInput | None = None,
         actor: str = Depends(require_admin),
+        query_scope: Annotated[str | None, Query(alias="scope")] = None,
+        query_occurrence: Annotated[UUID | None, Query(alias="occurrence")] = None,
+        query_occurrence_id: Annotated[
+            UUID | None, Query(alias="occurrence_id")
+        ] = None,
     ) -> dict:
         """Admin-only alias of event cancellation (see `cancel_event`)."""
         resolved, note = removal_actor(payload, actor)
+        scope, occurrence = resolve_scope(
+            payload.scope if payload else None,
+            (payload.occurrence_id or payload.occurrence) if payload else None,
+            query_scope,
+            query_occurrence or query_occurrence_id,
+        )
         with database.transaction() as connection:
-            return service.cancel_event(
-                connection, event_id, actor=resolved, note=note, is_admin=True
+            return service.cancel_occurrences(
+                connection,
+                event_id,
+                scope=scope,
+                occurrence_id=occurrence,
+                actor=resolved,
+                note=note,
+                is_admin=True,
+                past_days=settings.materialization_past_days,
+                future_months=settings.materialization_future_months,
             )
 
     @app.delete("/api/v1/admin/events/{event_id}")
@@ -629,12 +946,31 @@ def create_app(
         event_id: UUID,
         payload: RemovalInput | None = None,
         actor: str = Depends(require_admin),
+        query_scope: Annotated[str | None, Query(alias="scope")] = None,
+        query_occurrence: Annotated[UUID | None, Query(alias="occurrence")] = None,
+        query_occurrence_id: Annotated[
+            UUID | None, Query(alias="occurrence_id")
+        ] = None,
     ) -> dict:
         """Admin-only alias of event deletion (see `delete_event`)."""
         resolved, note = removal_actor(payload, actor)
+        scope, occurrence = resolve_scope(
+            payload.scope if payload else None,
+            (payload.occurrence_id or payload.occurrence) if payload else None,
+            query_scope,
+            query_occurrence or query_occurrence_id,
+        )
         with database.transaction() as connection:
-            return service.delete_event(
-                connection, event_id, actor=resolved, note=note, is_admin=True
+            return service.delete_occurrences(
+                connection,
+                event_id,
+                scope=scope,
+                occurrence_id=occurrence,
+                actor=resolved,
+                note=note,
+                is_admin=True,
+                past_days=settings.materialization_past_days,
+                future_months=settings.materialization_future_months,
             )
 
     return app

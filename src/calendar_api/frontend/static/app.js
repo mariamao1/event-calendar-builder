@@ -1302,7 +1302,11 @@ function renderEventDetail(view) {
     return;
   }
 
-  title.textContent = event.title;
+  const selectedOccurrence = view.timingLabel === "When" ? view.timing : null;
+  // A date with its own details (scoped single/future edit) shows them here;
+  // otherwise the occurrence carries the same content as the series.
+  const shown = (field) => selectedOccurrence?.[field] ?? event[field];
+  title.textContent = shown("title");
   if (event.is_cancelled) {
     status.textContent = "This event is cancelled.";
     status.classList.add("is-cancelled");
@@ -1313,8 +1317,15 @@ function renderEventDetail(view) {
       "That date is no longer on the calendar. Showing the rest of this event.",
     ].filter(Boolean).join(" ");
   }
+  if (selectedOccurrence?.is_cancelled && !event.is_cancelled) {
+    status.textContent = [status.textContent, "This date is cancelled."].filter(Boolean).join(" ");
+    status.classList.add("is-cancelled");
+  }
+  if (selectedOccurrence?.has_override) {
+    status.textContent = [status.textContent, "This date has its own details."].filter(Boolean).join(" ");
+  }
   const rows = [metaRow(view.timingLabel || "When", formatEventSchedule(view.timing || event))];
-  const location = [event.location_name, event.location_address].filter(Boolean).join(" · ");
+  const location = [shown("location_name"), shown("location_address")].filter(Boolean).join(" · ");
   if (location) rows.push(metaRow("Where", location));
   if (event.timezone && !(view.timing || event).is_all_day) {
     const eventZone = event.timezone.replaceAll("_", " ");
@@ -1328,8 +1339,8 @@ function renderEventDetail(view) {
   if (event.groups?.length) rows.push(metaRow(event.groups.length === 1 ? "Group" : "Groups", groupPills(event.groups)));
   meta.replaceChildren(...rows);
   meta.hidden = false;
-  description.textContent = event.description || "";
-  const safeUrl = safeEventUrl(event.event_url);
+  description.textContent = shown("description") || "";
+  const safeUrl = safeEventUrl(shown("event_url"));
   link.hidden = !safeUrl;
   if (safeUrl) link.href = safeUrl;
 
@@ -1401,6 +1412,17 @@ function renderSeriesSection(view) {
       tag.textContent = "Added";
       button.append(tag);
     }
+    if (occurrence.is_cancelled) {
+      const tag = document.createElement("span");
+      tag.className = "series-date-tag is-cancelled-tag";
+      tag.textContent = "Cancelled";
+      button.append(tag);
+    } else if (occurrence.has_override) {
+      const tag = document.createElement("span");
+      tag.className = "series-date-tag is-modified-tag";
+      tag.textContent = "Modified";
+      button.append(tag);
+    }
     button.addEventListener("click", () => selectSeriesOccurrence(occurrence));
     item.append(button);
     return item;
@@ -1421,7 +1443,7 @@ function renderSeriesSection(view) {
     notes.push(`+${remaining} more date${remaining === 1 ? "" : "s"}${coverageEnd ? ` scheduled through ${coverageEnd}` : ""}.`);
   }
   if (isAdminSignedIn() || creatorToken(event.event_id)) {
-    notes.push("Edits apply to every date in this series.");
+    notes.push("Changing a date asks whether to update only that date, that date and later ones, or every date in this series.");
   }
   more.textContent = notes.join(" ");
 }
@@ -1510,8 +1532,76 @@ async function copyEventLink() {
   }
 }
 
-function editEventFromDetail() {
+// Choosing what a change to a repeating event applies to: one date, that
+// date and every later one, or the whole series. Resolves with the chosen
+// scope ("single", "future", or "series"), or null when the dialog is
+// dismissed. A later change to the series replaces earlier per-date changes.
+const scopeDialog = document.querySelector("#scope-dialog");
+let scopeResolve = null;
+
+const SCOPE_ACTIONS = {
+  edit: {
+    title: "Edit repeating event",
+    confirm: "Continue",
+    describe: (label) => `You're changing ${label}. What should this edit apply to?`,
+  },
+  cancel: {
+    title: "Cancel repeating event",
+    confirm: "Continue",
+    describe: (label) => `You're cancelling ${label}. Cancelled dates stay on the calendar, marked as cancelled. What should this apply to?`,
+  },
+  delete: {
+    title: "Delete repeating event",
+    confirm: "Continue",
+    describe: (label) => `You're deleting ${label}. Deleted dates leave the calendar. What should this apply to?`,
+  },
+};
+
+function askOccurrenceScope(action, occurrenceLabel) {
+  const config = SCOPE_ACTIONS[action] || SCOPE_ACTIONS.edit;
+  document.querySelector("#scope-title").textContent = config.title;
+  document.querySelector("#scope-description").textContent = config.describe(occurrenceLabel);
+  document.querySelector("#scope-single-hint").textContent = `Only ${occurrenceLabel}. Other dates stay exactly as they are.`;
+  document.querySelector("#scope-future-hint").textContent = `${occurrenceLabel} and every later date. Earlier dates stay exactly as they are.`;
+  document.querySelector("#scope-confirm").textContent = config.confirm;
+  document.querySelector('input[name="scope-choice"][value="single"]').checked = true;
+  scopeDialog.showModal();
+  return new Promise((resolve) => {
+    scopeResolve = resolve;
+  });
+}
+
+function settleScopeChoice(scope) {
+  const resolve = scopeResolve;
+  scopeResolve = null;
+  if (scopeDialog.open) scopeDialog.close();
+  if (resolve) resolve(scope);
+}
+
+function scopedOccurrence() {
+  // The date a scoped change targets: only when the detail view is showing a
+  // scheduled date of a repeating series (not "Next date" or a missing one).
+  const { view } = eventDetail;
+  if (!view?.series || view.timingLabel !== "When" || !view.timing?.occurrence_id) {
+    return null;
+  }
+  return view.timing;
+}
+
+async function editEventFromDetail() {
   const { eventId } = eventDetail;
+  const occurrence = scopedOccurrence();
+  if (occurrence) {
+    const scope = await askOccurrenceScope("edit", formatOccurrenceLabel(occurrence));
+    if (!scope) return;
+    eventDialog.close();
+    if (scope === "series") {
+      openEditEventForm(eventId);
+      return;
+    }
+    openEditEventForm(eventId, null, { scope, occurrenceId: occurrence.occurrence_id, occurrence: { ...occurrence } });
+    return;
+  }
   eventDialog.close();
   openEditEventForm(eventId);
 }
@@ -1578,13 +1668,26 @@ async function cancelEventFromDetail() {
   const { eventId, view } = eventDetail;
   if (!(isAdminSignedIn() || creatorToken(eventId))) return;
   const title = view?.event?.title || "this event";
-  const warning = `Cancel "${title}"? It will stay on the calendar marked as cancelled.`;
+  const occurrence = scopedOccurrence();
+  let scope = "series";
+  let occurrenceId = null;
+  if (occurrence) {
+    scope = await askOccurrenceScope("cancel", formatOccurrenceLabel(occurrence));
+    if (!scope) return;
+    if (scope !== "series") occurrenceId = occurrence.occurrence_id;
+  }
+  const warning = scope === "single"
+    ? `Cancel the occurrence on ${formatOccurrenceLabel(occurrence)}? It will stay on the calendar marked as cancelled.`
+    : scope === "future"
+      ? `Cancel the occurrence on ${formatOccurrenceLabel(occurrence)} and every later date? They will stay on the calendar marked as cancelled.`
+      : `Cancel "${title}"? It will stay on the calendar marked as cancelled.`;
   if (!window.confirm(warning)) return;
   const button = document.querySelector("#cancel-event-button");
   button.disabled = true;
   setEventDetailError("");
   try {
-    await jsonRequest(`/api/v1/events/${eventId}/cancel`, {
+    const suffix = occurrenceId ? `?scope=${scope}&occurrence=${occurrenceId}` : "";
+    await jsonRequest(`/api/v1/events/${eventId}/cancel${suffix}`, {
       method: "POST",
       headers: removalHeaders(),
     });
@@ -1599,13 +1702,26 @@ async function deleteEventFromDetail() {
   const { eventId, view } = eventDetail;
   if (!(isAdminSignedIn() || creatorToken(eventId))) return;
   const title = view?.event?.title || "this event";
-  const warning = `Delete "${title}"? It will be permanently removed from the calendar for everyone.`;
+  const occurrence = scopedOccurrence();
+  let scope = "series";
+  let occurrenceId = null;
+  if (occurrence) {
+    scope = await askOccurrenceScope("delete", formatOccurrenceLabel(occurrence));
+    if (!scope) return;
+    if (scope !== "series") occurrenceId = occurrence.occurrence_id;
+  }
+  const warning = scope === "single"
+    ? `Delete the occurrence on ${formatOccurrenceLabel(occurrence)}? It will leave the calendar. The rest of the series stays.`
+    : scope === "future"
+      ? `Delete the occurrence on ${formatOccurrenceLabel(occurrence)} and every later date? They will leave the calendar.`
+      : `Delete "${title}"? It will be permanently removed from the calendar for everyone.`;
   if (!window.confirm(warning)) return;
   const button = document.querySelector("#delete-event-button");
   button.disabled = true;
   setEventDetailError("");
   try {
-    await jsonRequest(`/api/v1/events/${eventId}`, {
+    const suffix = occurrenceId ? `?scope=${scope}&occurrence=${occurrenceId}` : "";
+    await jsonRequest(`/api/v1/events/${eventId}${suffix}`, {
       method: "DELETE",
       headers: removalHeaders(),
     });
@@ -1668,7 +1784,7 @@ const reviewQueueDialog = document.querySelector("#review-queue-dialog");
 const reviewQueueList = document.querySelector("#review-queue-list");
 const reviewQueueError = document.querySelector("#review-queue-error");
 const reviewDetailDialog = document.querySelector("#review-detail-dialog");
-let eventFormMode = { eventId: null, managementToken: null, stayPending: false };
+let eventFormMode = { eventId: null, managementToken: null, stayPending: false, scope: null, occurrenceId: null, occurrence: null };
 let reviewQueueItems = [];
 let reviewDetail = null;
 let availableGroups = [];
@@ -2309,6 +2425,12 @@ function resetEventForm() {
   document.querySelector("#submitter-channel").value = "email";
   updateSubmitterContactType();
   document.querySelector("#copy-management-link").textContent = "Copy edit link";
+  // A scoped edit hides the repeat schedule (it stays with the series); a
+  // fresh form always starts with it visible and groups enabled.
+  document.querySelector("#event-recurrence-frequency").closest("fieldset").hidden = false;
+  for (const input of document.querySelectorAll("#event-groups input")) input.disabled = false;
+  document.querySelector("#event-scope-note").hidden = true;
+  document.querySelector("#event-scope-note").textContent = "";
   setDefaultEventTimes();
   syncTimingFields();
   setRecurrenceRule("");
@@ -2320,28 +2442,43 @@ function resetEventForm() {
 function updateEventFormMode() {
   const editing = Boolean(eventFormMode.eventId);
   const admin = isAdminSignedIn();
-  const queueEdit = editing && admin && eventFormMode.stayPending;
-  document.querySelector("#event-form-title").textContent = editing ? "Edit event" : "Add an event";
+  const scope = eventFormMode.scope;
+  const queueEdit = editing && admin && eventFormMode.stayPending && !scope;
+  document.querySelector("#event-form-title").textContent = scope === "single"
+    ? "Edit occurrence"
+    : scope === "future"
+      ? "Edit future dates"
+      : editing ? "Edit event" : "Add an event";
   document.querySelector("#event-form-eyebrow").textContent = admin ? "Admin event editor" : "Community submission";
-  document.querySelector("#event-form-intro").textContent = queueEdit
-    ? "Edit this submission. It stays in the review queue until you approve it."
-    : admin
-      ? "As an admin, this event will be approved and published when you save it."
-      : "Submissions and edits are reviewed by an admin before they appear on the calendar.";
-  document.querySelector("#approval-note").textContent = queueEdit
-    ? "Saving keeps this submission in the review queue."
-    : admin
-      ? "This admin-authored event will publish immediately."
-      : "An admin will review this event before it is published.";
-  document.querySelector("#event-submit-button").textContent = queueEdit
-    ? "Save edit"
-    : admin
-      ? (editing ? "Save and publish" : "Publish event")
-      : (editing ? "Submit edit for review" : "Submit for review");
+  document.querySelector("#event-form-intro").textContent = scope === "single"
+    ? "Change one date of this repeating series. Other dates stay exactly as they are."
+    : scope === "future"
+      ? "Change this date and every later one. Earlier dates stay exactly as they are."
+      : queueEdit
+        ? "Edit this submission. It stays in the review queue until you approve it."
+        : admin
+          ? "As an admin, this event will be approved and published when you save it."
+          : "Submissions and edits are reviewed by an admin before they appear on the calendar.";
+  document.querySelector("#approval-note").textContent = scope
+    ? "This change applies immediately."
+    : queueEdit
+      ? "Saving keeps this submission in the review queue."
+      : admin
+        ? "This admin-authored event will publish immediately."
+        : "An admin will review this event before it is published.";
+  document.querySelector("#event-submit-button").textContent = scope === "single"
+    ? "Save date"
+    : scope === "future"
+      ? "Save future dates"
+      : queueEdit
+        ? "Save edit"
+        : admin
+          ? (editing ? "Save and publish" : "Publish event")
+          : (editing ? "Submit edit for review" : "Submit for review");
 }
 
 async function openCreateEventForm() {
-  eventFormMode = { eventId: null, managementToken: null, stayPending: false };
+  eventFormMode = { eventId: null, managementToken: null, stayPending: false, scope: null, occurrenceId: null, occurrence: null };
   resetEventForm();
   updateEventFormMode();
   eventFormDialog.showModal();
@@ -2380,6 +2517,11 @@ async function openEditEventForm(eventId, suppliedToken = null, options = {}) {
     eventId,
     managementToken,
     stayPending: Boolean(options.stayPending) && isAdminSignedIn(),
+    scope: options.scope || null,
+    occurrenceId: options.occurrenceId || null,
+    // Snapshot of the date being edited: the detail dialog closes before the
+    // form opens, which clears eventDetail.view.
+    occurrence: options.occurrence || null,
   };
   resetEventForm();
   updateEventFormMode();
@@ -2390,9 +2532,51 @@ async function openEditEventForm(eventId, suppliedToken = null, options = {}) {
     });
     populateEventForm(event);
     await loadEventGroups((event.groups || []).map((group) => group.id));
+    if (eventFormMode.scope) applyScopedPrefill(event);
   } catch (error) {
     setEventFormError(error.message);
   }
+}
+
+// Prefill a scoped edit from the date being changed: content and timing come
+// from that occurrence (which already merges any per-date details), while the
+// repeat schedule and — for a single date — the groups stay with the series
+// and are locked in the form accordingly.
+function applyScopedPrefill(series) {
+  const { scope } = eventFormMode;
+  const { view } = eventDetail;
+  const timing = eventFormMode.occurrence
+    || (view?.timingLabel === "When" ? view.timing : null);
+  const label = timing ? formatOccurrenceLabel(timing) : "this date";
+  const note = document.querySelector("#event-scope-note");
+  document.querySelector("#event-recurrence-frequency").closest("fieldset").hidden = true;
+  if (scope === "single") {
+    note.textContent = `Editing only ${label}. The repeat schedule and groups stay with the series, and a later change to the series replaces this date's own details.`;
+    for (const input of document.querySelectorAll("#event-groups input")) input.disabled = true;
+  } else {
+    note.textContent = `Editing ${label} and every later date. Earlier dates keep their current details, and the repeat pattern itself is unchanged.`;
+  }
+  note.hidden = false;
+  if (!timing) return;
+  if (timing.title !== undefined) {
+    document.querySelector("#event-title").value = timing.title || "";
+    document.querySelector("#event-description").value = timing.description || "";
+    document.querySelector("#event-location-name").value = timing.location_name || "";
+    document.querySelector("#event-location-address").value = timing.location_address || "";
+    document.querySelector("#event-url").value = timing.event_url || "";
+  }
+  const timezone = series.timezone || state.timezone;
+  timezoneOptions(timezone);
+  if (timing.is_all_day) {
+    document.querySelector("#event-all-day").checked = true;
+    document.querySelector("#event-start-date").value = timing.start_date;
+    document.querySelector("#event-end-date").value = addIsoDays(timing.end_date, -1);
+  } else if (timing.starts_at && timing.ends_at) {
+    document.querySelector("#event-all-day").checked = false;
+    document.querySelector("#event-starts-at").value = isoToZonedInput(timing.starts_at, timezone).slice(0, 16);
+    document.querySelector("#event-ends-at").value = isoToZonedInput(timing.ends_at, timezone).slice(0, 16);
+  }
+  syncTimingFields();
 }
 
 function collectRecurrenceDates(allDay) {
@@ -2499,9 +2683,19 @@ async function submitEventForm(event) {
     const payload = buildEventPayload();
     const editing = Boolean(eventFormMode.eventId);
     const admin = isAdminSignedIn();
+    const scope = eventFormMode.scope;
+    if (scope) {
+      // A scoped change never carries a repeat pattern of its own: the
+      // server reuses the published schedule (or truncates it), so the form's
+      // echoed-back schedule is dropped instead of validated as a new one.
+      // This also lets one date move to a day outside the series pattern.
+      payload.recurrence_rule = null;
+      payload.recurrence_dates = [];
+    }
     // An admin editing a queued submission keeps it pending so it can still
     // be approved or rejected afterwards; every other admin save publishes.
-    const queueEdit = editing && admin && eventFormMode.stayPending;
+    // Scoped edits always apply at once (never through the review queue).
+    const queueEdit = editing && admin && eventFormMode.stayPending && !scope;
     let path;
     if (queueEdit) {
       path = `/api/v1/events/${eventFormMode.eventId}/revisions`;
@@ -2513,6 +2707,9 @@ async function submitEventForm(event) {
       path = editing
         ? `/api/v1/events/${eventFormMode.eventId}/revisions`
         : urlWithAccessToken("/api/v1/events");
+    }
+    if (scope) {
+      path += `?scope=${scope}&occurrence=${eventFormMode.occurrenceId}`;
     }
     submit.disabled = true;
     submit.textContent = "Saving…";
@@ -2994,6 +3191,11 @@ function bindControls() {
   });
   document.querySelector("#review-queue-button").addEventListener("click", openReviewQueue);
   document.querySelector("#copy-event-link-button").addEventListener("click", copyEventLink);
+  document.querySelector("#scope-confirm").addEventListener("click", () => {
+    const selected = document.querySelector('input[name="scope-choice"]:checked');
+    settleScopeChoice(selected ? selected.value : "single");
+  });
+  scopeDialog.addEventListener("close", () => settleScopeChoice(null));
   document.querySelector("#edit-event-button").addEventListener("click", editEventFromDetail);
   document.querySelector("#review-event-edit-button").addEventListener("click", reviewEventFromDetail);
   document.querySelector("#unpublish-event-button").addEventListener("click", unpublishEventFromDetail);
