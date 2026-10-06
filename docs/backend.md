@@ -59,6 +59,31 @@ rolling window in the event's IANA timezone. Expansion preserves wall-clock
 time across daylight-saving changes, drops nonexistent local times, uses
 EXDATE precedence, and caps one event/window at 10,000 instances.
 
+Submission validation requires the event start to be the first date the RRULE
+produces. Expansion always keeps the start as an occurrence, but dateutil
+skips a `DTSTART` that does not match the rule, so an off-pattern start (for
+example a Saturday start with `BYDAY=TU`) would add a stray date and make
+`COUNT` one short. A rule whose `UNTIL` falls before the start is rejected too.
+Timed series must express `UNTIL` in UTC; the event form sends 23:59 local time
+on the chosen last day, so the whole final day is included.
+
+The event form builds these RRULE shapes from the series' first date:
+
+| Pattern | RRULE |
+| --- | --- |
+| Every N days | `FREQ=DAILY;INTERVAL=N` |
+| Every N weeks on chosen weekdays | `FREQ=WEEKLY;INTERVAL=N;BYDAY=TU,TH` |
+| Monthly on the start's date | `FREQ=MONTHLY;BYMONTHDAY=15` |
+| Monthly on the Nth / last weekday | `FREQ=MONTHLY;BYDAY=2TU` / `BYDAY=-1FR` |
+| Monthly on the last day | `FREQ=MONTHLY;BYMONTHDAY=-1` |
+| Yearly on the start's date | `FREQ=YEARLY;BYMONTH=11;BYMONTHDAY=26` |
+| Yearly on the Nth / last weekday of the month | `FREQ=YEARLY;BYMONTH=11;BYDAY=4TH` |
+
+Each series never ends, ends on a date (`UNTIL`), or ends after a number of
+times (`COUNT`, 1–999). Rules outside this set are still accepted from the API;
+the form keeps them unchanged as a "Custom schedule" unless the editor picks a
+new pattern.
+
 Approval, occurrence reconciliation, the published pointer, and the audit
 action commit together. Existing `(event_id, recurrence_id)` rows keep their
 IDs and increment `version`; removed future instances become durable cancelled

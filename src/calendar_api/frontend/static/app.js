@@ -417,6 +417,7 @@ function renderBand(segment) {
   title.className = "band-title";
   title.textContent = event.title;
   button.append(title);
+  appendRepeatIcon(button, event);
   button.addEventListener("click", () => openEventDialog(event));
   return button;
 }
@@ -439,6 +440,7 @@ function renderTimedEvent(event) {
   title.className = "timed-title";
   title.textContent = event.title;
   button.append(dot, time, title);
+  appendRepeatIcon(button, event);
   button.addEventListener("click", () => openEventDialog(event));
   return button;
 }
@@ -591,6 +593,7 @@ function renderTimeBlock(segment, rangeStartMin, rangeMinutes) {
   title.textContent =
     (segment.continuesBefore ? "↩ " : "") + event.title + (segment.continuesAfter ? " ↪" : "");
   button.append(time, title);
+  appendRepeatIcon(title, event);
   button.addEventListener("click", () => openEventDialog(event));
   return button;
 }
@@ -622,7 +625,11 @@ function renderTimeView(days, allDayContainer, gridContainer) {
       button.className = ["allday-chip", cancelledClass(event)].filter(Boolean).join(" ");
       button.style.setProperty("--band-bg", color.soft);
       button.style.setProperty("--band-ink", color.ink);
-      button.textContent = event.title;
+      const title = document.createElement("span");
+      title.className = "allday-chip-title";
+      title.textContent = event.title;
+      button.append(title);
+      appendRepeatIcon(button, event);
       button.title = eventAriaLabel(event);
       button.setAttribute("aria-label", `${eventAriaLabel(event)} on ${formatDate(day, { month: "long", day: "numeric" })}`);
       button.addEventListener("click", () => openEventDialog(event));
@@ -845,7 +852,21 @@ async function loadMonth() {
 
 function eventAriaLabel(event) {
   const timing = event.is_all_day ? "All day" : formatTime(event.starts_at);
-  return `${timing}: ${event.title}${event.is_cancelled ? " (cancelled)" : ""}`;
+  const repeats = event.recurrence_rule ? " (repeats)" : "";
+  return `${timing}: ${event.title}${repeats}${event.is_cancelled ? " (cancelled)" : ""}`;
+}
+
+// Small cue on calendar items that belong to a repeating series. Items with
+// their own aria-label already say "(repeats)"; the icon's name covers the rest.
+function appendRepeatIcon(element, event) {
+  if (!event.recurrence_rule) return;
+  const icon = document.createElement("span");
+  icon.className = "repeat-icon";
+  icon.setAttribute("role", "img");
+  icon.setAttribute("aria-label", "repeats");
+  icon.title = "Repeating event";
+  icon.textContent = "↻";
+  element.append(icon);
 }
 
 function cancelledClass(event) {
@@ -882,6 +903,7 @@ function openDayDialog(key) {
     const title = document.createElement("span");
     title.className = "day-card-title";
     title.textContent = event.title;
+    appendRepeatIcon(title, event);
     const meta = document.createElement("span");
     meta.className = "day-card-meta";
     const location = event.location_name ? ` · ${event.location_name}` : "";
@@ -968,14 +990,15 @@ function safeEventUrl(value) {
   return null;
 }
 
-const WEEKDAY_OFFSETS = { SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6 };
+const WEEKDAY_CODES = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
 const RECURRENCE_UNITS = {
   DAILY: ["day", "days"],
   WEEKLY: ["week", "weeks"],
   MONTHLY: ["month", "months"],
   YEARLY: ["year", "years"],
 };
-const DESCRIBED_RRULE_PARTS = new Set(["FREQ", "INTERVAL", "BYDAY", "BYMONTHDAY", "COUNT", "UNTIL", "WKST"]);
+const DESCRIBED_RRULE_PARTS = new Set(["FREQ", "INTERVAL", "BYDAY", "BYMONTHDAY", "BYMONTH", "COUNT", "UNTIL", "WKST"]);
+const ORDINAL_WORDS = ["first", "second", "third", "fourth", "fifth"];
 
 function listText(items) {
   try {
@@ -988,54 +1011,104 @@ function listText(items) {
 function ordinalText(value) {
   if (value === -1) return "last";
   if (value < -1) return `${ordinalText(-value)} to last`;
+  if (value <= ORDINAL_WORDS.length) return ORDINAL_WORDS[value - 1];
   const suffix = { 1: "st", 2: "nd", 3: "rd" }[value % 100 > 10 && value % 100 < 14 ? 0 : value % 10] || "th";
   return `${value}${suffix}`;
+}
+
+function weekdayName(code, style = "long") {
+  return formatDate(utcDate(2024, 0, 7 + WEEKDAY_CODES.indexOf(code)), { weekday: style });
+}
+
+function monthName(month) {
+  return formatDate(utcDate(2024, month - 1, 1), { month: "long" });
+}
+
+function daysInMonth(value) {
+  return utcDate(value.getUTCFullYear(), value.getUTCMonth() + 1, 0).getUTCDate();
+}
+
+function ruleParts(rule) {
+  const parts = {};
+  for (const piece of String(rule || "").replace(/^RRULE:/i, "").split(";")) {
+    const [key, value] = piece.split("=");
+    if (key && value) parts[key.toUpperCase()] = value.toUpperCase();
+  }
+  return parts;
+}
+
+// The calendar date (in the event's timezone) of an RRULE UNTIL value. Timed
+// series carry UTC UNTIL instants, which may fall on the next UTC day.
+function untilDateKey(until, timezone) {
+  const match = String(until || "").match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})(Z?))?$/);
+  if (!match) return null;
+  const [, year, month, day, hour, minute, second, utc] = match;
+  if (hour === undefined || !utc) return `${year}-${month}-${day}`;
+  const instant = `${year}-${month}-${day}T${hour}:${minute}:${second}Z`;
+  return isoToZonedInput(instant, timezone || "UTC").slice(0, 10);
 }
 
 // Plain-language summary of the RRULE subset the event form produces, plus
 // the common BYDAY/BYMONTHDAY/COUNT/UNTIL variants. Anything richer is shown
 // as a custom schedule rather than risking a misleading sentence. Without
 // BYDAY/BYMONTHDAY a rule repeats on the series start's weekday/day.
-function describeRecurrence(rule, startKey = null) {
+function describeRecurrence(rule, startKey = null, timezone = null) {
   if (!rule) return "";
-  const parts = {};
-  for (const piece of rule.split(";")) {
-    const [key, value] = piece.split("=");
-    if (key && value) parts[key.toUpperCase()] = value.toUpperCase();
-  }
+  const parts = ruleParts(rule);
   const units = RECURRENCE_UNITS[parts.FREQ];
   const interval = Number(parts.INTERVAL || 1);
   const known = Object.keys(parts).every((key) => DESCRIBED_RRULE_PARTS.has(key));
-  if (!units || !known || !Number.isInteger(interval) || interval < 1) {
+  const month = parts.BYMONTH ? Number(parts.BYMONTH) : null;
+  const monthOk = month === null || (parts.FREQ === "YEARLY" && Number.isInteger(month) && month >= 1 && month <= 12);
+  if (!units || !known || !monthOk || !Number.isInteger(interval) || interval < 1) {
     return "Repeats on a custom schedule";
   }
   let text = interval === 1 ? `Every ${units[0]}` : `Every ${interval} ${units[1]}`;
+  const ofMonth = month ? ` of ${monthName(month)}` : "";
   const days = parts.BYDAY ? parts.BYDAY.split(",") : [];
   const weekdays = ["MO", "TU", "WE", "TH", "FR"];
   if (parts.FREQ === "WEEKLY" && interval === 1 && days.length === 5 && weekdays.every((day) => days.includes(day))) {
     text = "Every weekday";
   } else if (days.length > 0) {
+    if (parts.BYMONTHDAY) return "Repeats on a custom schedule";
     const names = days.map((day) => {
       const match = day.match(/^([+-]?\d{1,2})?(SU|MO|TU|WE|TH|FR|SA)$/);
       if (!match) return null;
-      const name = formatDate(utcDate(2024, 0, 7 + WEEKDAY_OFFSETS[match[2]]), { weekday: "long" });
+      const name = weekdayName(match[2]);
       return match[1] ? `the ${ordinalText(Number(match[1]))} ${name}` : name;
     });
     if (names.includes(null)) return "Repeats on a custom schedule";
-    text += ` on ${listText(names)}`;
+    text += ` on ${listText(names)}${ofMonth}`;
   } else if (parts.BYMONTHDAY) {
-    text += ` on day ${listText(parts.BYMONTHDAY.split(","))}`;
+    const monthDays = parts.BYMONTHDAY.split(",").map(Number);
+    if (monthDays.some((day) => !Number.isInteger(day) || day === 0 || day < -1 || day > 31)) {
+      return "Repeats on a custom schedule";
+    }
+    if (monthDays.length === 1 && monthDays[0] === -1) {
+      text += ` on the last day${ofMonth}`;
+    } else if (monthDays.includes(-1)) {
+      return "Repeats on a custom schedule";
+    } else if (month) {
+      if (monthDays.some((day) => day > daysInMonth(utcDate(2024, month - 1, 1)))) {
+        return "Repeats on a custom schedule";
+      }
+      text += ` on ${listText(monthDays.map((day) => formatDate(utcDate(2024, month - 1, day), { month: "long", day: "numeric" })))}`;
+    } else {
+      text += ` on day ${listText(monthDays.map(String))}`;
+    }
+  } else if (month) {
+    return "Repeats on a custom schedule";
   } else if (startKey) {
     const start = dateFromKey(startKey);
     if (parts.FREQ === "WEEKLY") text += ` on ${formatDate(start, { weekday: "long" })}`;
     if (parts.FREQ === "MONTHLY") text += ` on day ${start.getUTCDate()}`;
     if (parts.FREQ === "YEARLY") text += ` on ${formatDate(start, { month: "long", day: "numeric" })}`;
   }
+  const untilKey = untilDateKey(parts.UNTIL, timezone);
   if (parts.COUNT) {
     text += ` · ${parts.COUNT} time${parts.COUNT === "1" ? "" : "s"}`;
-  } else if (/^\d{8}/.test(parts.UNTIL || "")) {
-    const until = utcDate(Number(parts.UNTIL.slice(0, 4)), Number(parts.UNTIL.slice(4, 6)) - 1, Number(parts.UNTIL.slice(6, 8)));
-    text += ` · until ${formatDate(until, { month: "short", day: "numeric", year: "numeric" })}`;
+  } else if (untilKey) {
+    text += ` · until ${formatDate(dateFromKey(untilKey), { month: "short", day: "numeric", year: "numeric" })}`;
   } else {
     text += " · no end date";
   }
@@ -1280,7 +1353,7 @@ function renderSeriesSection(view) {
   const { event } = view;
   const startKey = occurrenceDayKey(event);
   document.querySelector("#event-series-summary").textContent = event.recurrence_rule
-    ? describeRecurrence(event.recurrence_rule, startKey)
+    ? describeRecurrence(event.recurrence_rule, startKey, event.timezone)
     : "On selected dates";
 
   const rows = [metaRow("Starts", formatDate(dateFromKey(startKey), {
@@ -1719,18 +1792,346 @@ function timezoneOptions(selected) {
   select.value = selected || state.timezone || "UTC";
 }
 
-function setRecurrenceRule(rule) {
-  const select = document.querySelector("#event-recurrence-rule");
-  const value = rule || "";
+// "On …" choices for a monthly or yearly series, derived from its first date
+// so the start always matches the pattern (the API requires that).
+function recurrencePositions(frequency, startKey) {
+  const start = dateFromKey(startKey);
+  const day = start.getUTCDate();
+  const code = WEEKDAY_CODES[start.getUTCDay()];
+  const weekday = weekdayName(code);
+  const nth = Math.ceil(day / 7);
+  const lastDay = daysInMonth(start);
+  const yearly = frequency === "YEARLY";
+  const month = start.getUTCMonth() + 1;
+  const prefix = yearly ? `BYMONTH=${month};` : "";
+  const ofMonth = yearly ? ` of ${monthName(month)}` : "";
+  const options = [{
+    value: "date",
+    rule: `${prefix}BYMONTHDAY=${day}`,
+    label: yearly ? `On ${formatDate(start, { month: "long", day: "numeric" })}` : `On day ${day}`,
+  }];
+  if (nth <= 4) {
+    options.push({ value: "weekday", rule: `${prefix}BYDAY=${nth}${code}`, label: `On the ${ordinalText(nth)} ${weekday}${ofMonth}` });
+  }
+  if (day + 7 > lastDay) {
+    options.push({ value: "last-weekday", rule: `${prefix}BYDAY=-1${code}`, label: `On the last ${weekday}${ofMonth}` });
+  }
+  if (!yearly && day === lastDay) {
+    options.push({ value: "last-day", rule: "BYMONTHDAY=-1", label: "On the last day" });
+  }
+  return options;
+}
+
+function compactUtc(iso) {
+  return iso.replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+}
+
+// Form settings → RRULE. Callers validate with recurrenceSettingsError first.
+function recurrenceRuleFromSettings(settings, startKey, allDay, timezone) {
+  const { frequency } = settings;
+  if (!frequency) return null;
+  const parts = [`FREQ=${frequency}`];
+  if (settings.interval > 1) parts.push(`INTERVAL=${settings.interval}`);
+  if (frequency === "WEEKLY") {
+    const order = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"];
+    parts.push(`BYDAY=${order.filter((code) => settings.weekdays.includes(code)).join(",")}`);
+  } else if (frequency === "MONTHLY" || frequency === "YEARLY") {
+    const options = recurrencePositions(frequency, startKey);
+    parts.push((options.find((option) => option.value === settings.position) || options[0]).rule);
+  }
+  if (settings.end === "count") parts.push(`COUNT=${settings.count}`);
+  if (settings.end === "until") {
+    // Timed series end after the last local day, expressed in UTC (RFC 5545).
+    parts.push(`UNTIL=${allDay
+      ? settings.until.replaceAll("-", "")
+      : compactUtc(zonedLocalToIso(`${settings.until}T23:59`, timezone))}`);
+  }
+  return parts.join(";");
+}
+
+function recurrenceSettingsError(settings, startKey) {
+  if (!settings.frequency || settings.frequency === "CUSTOM") return null;
+  if (!startKey) return "Choose a start date for the repeating event.";
+  if (!Number.isInteger(settings.interval) || settings.interval < 1 || settings.interval > 99) {
+    return "Repeat every 1 to 99 " + RECURRENCE_UNITS[settings.frequency][1] + ".";
+  }
+  if (settings.frequency === "WEEKLY") {
+    if (!settings.weekdays.length) return "Choose at least one day of the week.";
+    const startCode = WEEKDAY_CODES[dateFromKey(startKey).getUTCDay()];
+    if (!settings.weekdays.includes(startCode)) {
+      const name = weekdayName(startCode);
+      return `The event starts on a ${name}. Select ${name} too, or move the start to a selected day.`;
+    }
+  }
+  if (settings.end === "until") {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(settings.until)) return "Choose the date the series ends.";
+    if (settings.until < startKey) return "The series can't end before it starts.";
+  }
+  if (settings.end === "count" && (!Number.isInteger(settings.count) || settings.count < 1 || settings.count > 999)) {
+    return "A series can repeat 1 to 999 times.";
+  }
+  return null;
+}
+
+// RRULE → form settings, or null when the form can't represent the rule
+// exactly (it is then kept as a custom schedule).
+function recurrenceSettingsFromRule(rule, startKey, timezone) {
+  const settings = { frequency: "", interval: 1, weekdays: [], position: "date", end: "never", until: "", count: 10 };
+  if (!rule) return settings;
+  const parts = ruleParts(rule);
+  const allowed = new Set(["FREQ", "INTERVAL", "BYDAY", "BYMONTHDAY", "BYMONTH", "COUNT", "UNTIL", "WKST"]);
+  if (!RECURRENCE_UNITS[parts.FREQ] || !startKey) return null;
+  if (Object.keys(parts).some((key) => !allowed.has(key))) return null;
+  if ((parts.WKST && parts.WKST !== "MO") || (parts.COUNT && parts.UNTIL)) return null;
+  settings.frequency = parts.FREQ;
+  settings.interval = Number(parts.INTERVAL || 1);
+  if (!Number.isInteger(settings.interval) || settings.interval < 1 || settings.interval > 99) return null;
+  if (parts.COUNT) {
+    settings.end = "count";
+    settings.count = Number(parts.COUNT);
+    if (!Number.isInteger(settings.count) || settings.count < 1 || settings.count > 999) return null;
+  } else if (parts.UNTIL) {
+    settings.end = "until";
+    settings.until = untilDateKey(parts.UNTIL, timezone);
+    if (!settings.until) return null;
+  }
+
+  const startCode = WEEKDAY_CODES[dateFromKey(startKey).getUTCDay()];
+  if (parts.FREQ === "DAILY") {
+    return parts.BYDAY || parts.BYMONTHDAY || parts.BYMONTH ? null : settings;
+  }
+  if (parts.FREQ === "WEEKLY") {
+    if (parts.BYMONTHDAY || parts.BYMONTH) return null;
+    const days = parts.BYDAY ? parts.BYDAY.split(",") : [startCode];
+    if (days.some((day) => !WEEKDAY_CODES.includes(day))) return null;
+    settings.weekdays = [...new Set(days)];
+    return settings;
+  }
+  if (parts.BYDAY && parts.BYMONTHDAY) return null;
+  const options = recurrencePositions(parts.FREQ, startKey);
+  if (!parts.BYDAY && !parts.BYMONTHDAY && !parts.BYMONTH) return settings;
+  const prefix = parts.BYMONTH ? `BYMONTH=${Number(parts.BYMONTH)};` : "";
+  const byRule = parts.BYDAY ? `BYDAY=${parts.BYDAY.replace(/^\+/, "")}` : `BYMONTHDAY=${parts.BYMONTHDAY}`;
+  const match = options.find((option) => option.rule === prefix + byRule);
+  if (!match) return null;
+  settings.position = match.value;
+  return settings;
+}
+
+let customRecurrenceRule = null;
+
+function recurrenceStartKey() {
+  const value = document.querySelector("#event-all-day").checked
+    ? document.querySelector("#event-start-date").value
+    : document.querySelector("#event-starts-at").value.slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null;
+}
+
+function readRecurrenceSettings() {
+  return {
+    frequency: document.querySelector("#event-recurrence-frequency").value,
+    interval: Number(document.querySelector("#event-recurrence-interval").value),
+    weekdays: [...document.querySelectorAll("#recurrence-weekdays input:checked")].map((input) => input.value),
+    position: document.querySelector('#recurrence-positions input:checked')?.value || "date",
+    end: document.querySelector('input[name="recurrence-end"]:checked')?.value || "never",
+    until: document.querySelector("#event-recurrence-until").value,
+    count: Number(document.querySelector("#event-recurrence-count").value),
+  };
+}
+
+function renderWeekdayToggles() {
+  document.querySelector("#recurrence-weekdays").replaceChildren(...WEEKDAY_CODES.map((code) => {
+    const label = document.createElement("label");
+    label.className = "weekday-toggle";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.value = code;
+    input.setAttribute("aria-label", weekdayName(code));
+    input.addEventListener("change", syncRecurrenceFields);
+    const text = document.createElement("span");
+    text.setAttribute("aria-hidden", "true");
+    text.textContent = weekdayName(code, "short");
+    label.append(input, text);
+    return label;
+  }));
+}
+
+function setRecurrenceWeekdays(codes) {
+  for (const input of document.querySelectorAll("#recurrence-weekdays input")) {
+    input.checked = codes.includes(input.value);
+  }
+}
+
+// Keep a weekly series on its start day: a lone selected day follows the
+// start date, and switching to weekly preselects the start's weekday.
+let recurrenceStartCode = null;
+function followRecurrenceStart() {
+  const startKey = recurrenceStartKey();
+  // Ignore the transient empty value while a date is being typed.
+  if (startKey) {
+    const code = WEEKDAY_CODES[dateFromKey(startKey).getUTCDay()];
+    const { weekdays } = readRecurrenceSettings();
+    if (!weekdays.length || (weekdays.length === 1 && weekdays[0] === recurrenceStartCode)) {
+      setRecurrenceWeekdays([code]);
+    }
+    recurrenceStartCode = code;
+  }
+  syncRecurrenceFields();
+}
+
+function syncRecurrenceFields() {
+  const settings = readRecurrenceSettings();
+  const { frequency } = settings;
+  const custom = frequency === "CUSTOM";
+  const repeating = Boolean(frequency) && !custom;
+  const startKey = recurrenceStartKey();
+  document.querySelector("#recurrence-interval-field").hidden = !repeating;
+  document.querySelector("#recurrence-options").hidden = !repeating;
+  document.querySelector("#recurrence-custom-note").hidden = !custom;
+  document.querySelector("#recurrence-weekdays-field").hidden = frequency !== "WEEKLY";
+  if (repeating) {
+    const units = RECURRENCE_UNITS[frequency];
+    document.querySelector("#recurrence-interval-unit").textContent = settings.interval === 1 ? units[0] : units[1];
+  }
+
+  const positionField = document.querySelector("#recurrence-position-field");
+  const note = document.querySelector("#recurrence-position-note");
+  positionField.hidden = !(repeating && startKey && (frequency === "MONTHLY" || frequency === "YEARLY"));
+  note.hidden = true;
+  if (!positionField.hidden) {
+    const options = recurrencePositions(frequency, startKey);
+    const selected = options.some((option) => option.value === settings.position) ? settings.position : "date";
+    const container = document.querySelector("#recurrence-positions");
+    // Rebuild only when the choices change so keyboard focus survives.
+    const optionsKey = options.map((option) => option.label).join("|");
+    if (container.dataset.options !== optionsKey) {
+      container.dataset.options = optionsKey;
+      container.replaceChildren(...options.map((option) => {
+        const label = document.createElement("label");
+        label.className = "check-row";
+        const input = document.createElement("input");
+        input.type = "radio";
+        input.name = "recurrence-position";
+        input.value = option.value;
+        input.checked = option.value === selected;
+        input.addEventListener("change", syncRecurrenceFields);
+        const text = document.createElement("span");
+        text.textContent = option.label;
+        label.append(input, text);
+        return label;
+      }));
+    }
+    const start = dateFromKey(startKey);
+    const day = start.getUTCDate();
+    if (selected === "date" && frequency === "MONTHLY" && day > 28) {
+      note.textContent = `Months without a ${day}${day === 31 ? "st" : "th"} are skipped.`;
+      note.hidden = false;
+    } else if (selected === "date" && frequency === "YEARLY" && day === 29 && start.getUTCMonth() === 1) {
+      note.textContent = "February 29 only occurs in leap years.";
+      note.hidden = false;
+    }
+  }
+
+  const summary = document.querySelector("#recurrence-summary");
+  const timezone = document.querySelector("#event-timezone").value || "UTC";
+  const allDay = document.querySelector("#event-all-day").checked;
+  let text = "";
+  let warning = false;
+  if (custom) {
+    text = describeRecurrence(customRecurrenceRule, startKey, timezone);
+  } else if (repeating) {
+    const error = recurrenceSettingsError(settings, startKey);
+    if (error) {
+      text = error;
+      warning = true;
+    } else {
+      try {
+        text = describeRecurrence(recurrenceRuleFromSettings(settings, startKey, allDay, timezone), startKey, timezone);
+      } catch (error) {
+        text = error.message;
+        warning = true;
+      }
+    }
+  }
+  summary.textContent = text;
+  summary.hidden = !text;
+  summary.classList.toggle("is-warning", warning);
+}
+
+function setRecurrenceRule(rule, startKey = recurrenceStartKey(), timezone = null) {
+  const select = document.querySelector("#event-recurrence-frequency");
   for (const option of select.querySelectorAll("option[data-custom]")) option.remove();
-  if (value && ![...select.options].some((option) => option.value === value)) {
+  let settings = recurrenceSettingsFromRule(rule || "", startKey, timezone);
+  customRecurrenceRule = null;
+  if (!settings) {
+    customRecurrenceRule = rule;
     const option = document.createElement("option");
-    option.value = value;
-    option.textContent = "Current custom schedule";
+    option.value = "CUSTOM";
+    option.textContent = "Custom schedule";
     option.dataset.custom = "true";
     select.append(option);
+    settings = { ...recurrenceSettingsFromRule("", startKey, timezone), frequency: "CUSTOM" };
   }
-  select.value = value;
+  select.value = settings.frequency;
+  document.querySelector("#event-recurrence-interval").value = String(settings.interval);
+  setRecurrenceWeekdays(settings.weekdays);
+  const positions = document.querySelector("#recurrence-positions");
+  positions.replaceChildren();
+  delete positions.dataset.options;
+  for (const input of document.querySelectorAll('input[name="recurrence-end"]')) {
+    input.checked = input.value === settings.end;
+  }
+  document.querySelector("#event-recurrence-until").value = settings.until;
+  document.querySelector("#event-recurrence-count").value = String(settings.count);
+  recurrenceStartCode = startKey ? WEEKDAY_CODES[dateFromKey(startKey).getUTCDay()] : null;
+  syncRecurrenceFields();
+  // Positions render on sync; restore the parsed choice now that they exist.
+  const position = document.querySelector(`#recurrence-positions input[value="${settings.position}"]`);
+  if (position) {
+    position.checked = true;
+    syncRecurrenceFields();
+  }
+}
+
+function buildRecurrenceRule(allDay, timezone) {
+  const settings = readRecurrenceSettings();
+  if (settings.frequency === "CUSTOM") return customRecurrenceRule;
+  const startKey = recurrenceStartKey();
+  const error = recurrenceSettingsError(settings, startKey);
+  if (error) throw new Error(error);
+  return recurrenceRuleFromSettings(settings, startKey, allDay, timezone);
+}
+
+function bindRecurrenceControls() {
+  renderWeekdayToggles();
+  document.querySelector("#event-recurrence-frequency").addEventListener("change", followRecurrenceStart);
+  document.querySelector("#event-recurrence-interval").addEventListener("input", syncRecurrenceFields);
+  for (const input of document.querySelectorAll('input[name="recurrence-end"]')) {
+    input.addEventListener("change", () => {
+      const until = document.querySelector("#event-recurrence-until");
+      const startKey = recurrenceStartKey();
+      if (input.value === "until" && !until.value && startKey) {
+        const start = dateFromKey(startKey);
+        until.value = dateKey(utcDate(start.getUTCFullYear(), start.getUTCMonth() + 3, start.getUTCDate()));
+      }
+      syncRecurrenceFields();
+    });
+  }
+  // Editing an end value selects its option.
+  for (const [id, value] of [["#event-recurrence-until", "until"], ["#event-recurrence-count", "count"]]) {
+    const field = document.querySelector(id);
+    const choose = () => {
+      document.querySelector(`input[name="recurrence-end"][value="${value}"]`).checked = true;
+      syncRecurrenceFields();
+    };
+    field.addEventListener("focus", choose);
+    field.addEventListener("input", choose);
+  }
+  for (const id of ["#event-starts-at", "#event-start-date"]) {
+    document.querySelector(id).addEventListener("input", followRecurrenceStart);
+    document.querySelector(id).addEventListener("change", followRecurrenceStart);
+  }
+  document.querySelector("#event-timezone").addEventListener("change", syncRecurrenceFields);
 }
 
 function zonedLocalToIso(value, timezone) {
@@ -1829,6 +2230,7 @@ function syncTimingFields() {
     if (allDay && original) input.value = original.slice(0, 10);
     if (!allDay && original && !original.includes("T")) input.value = `${original}T09:00`;
   }
+  followRecurrenceStart();
 }
 
 function addRecurrenceDate(value = "", kind = "include") {
@@ -1904,12 +2306,12 @@ function resetEventForm() {
   document.querySelector("#event-form-id").value = "";
   document.querySelector("#recurrence-date-list").replaceChildren();
   timezoneOptions(state.timezone);
-  setRecurrenceRule("");
   document.querySelector("#submitter-channel").value = "email";
   updateSubmitterContactType();
   document.querySelector("#copy-management-link").textContent = "Copy edit link";
   setDefaultEventTimes();
   syncTimingFields();
+  setRecurrenceRule("");
   setEventFormError("");
   eventForm.hidden = false;
   eventFormSuccess.hidden = true;
@@ -1962,12 +2364,12 @@ function populateEventForm(event) {
     document.querySelector("#event-starts-at").value = isoToZonedInput(event.starts_at, event.timezone);
     document.querySelector("#event-ends-at").value = isoToZonedInput(event.ends_at, event.timezone);
   }
-  setRecurrenceRule(event.recurrence_rule);
   document.querySelector("#submitter-name").value = event.submitted_by_name || "";
   document.querySelector("#submitter-channel").value = event.submitted_by_channel || "email";
   updateSubmitterContactType();
   document.querySelector("#submitter-contact").value = event.submitted_by_contact || "";
   syncTimingFields();
+  setRecurrenceRule(event.recurrence_rule, recurrenceStartKey(), event.timezone);
   document.querySelector("#recurrence-date-list").replaceChildren();
   for (const item of event.recurrence_dates || []) addRecurrenceDate(item.local_start, item.kind);
 }
@@ -2026,7 +2428,7 @@ function buildEventPayload() {
     event_url: document.querySelector("#event-url").value.trim() || null,
     is_all_day: allDay,
     timezone,
-    recurrence_rule: document.querySelector("#event-recurrence-rule").value.trim() || null,
+    recurrence_rule: buildRecurrenceRule(allDay, timezone),
     recurrence_dates: collectRecurrenceDates(allDay),
     group_ids: groupIds,
     submitter: {
@@ -2394,7 +2796,12 @@ function currentPendingRevision(detail) {
 
 function recurrenceText(revision) {
   const parts = [];
-  if (revision.recurrence_rule) parts.push(`Repeats: ${revision.recurrence_rule}`);
+  if (revision.recurrence_rule) {
+    const startKey = revision.is_all_day
+      ? revision.start_date
+      : isoToZonedInput(revision.starts_at, revision.timezone).slice(0, 10);
+    parts.push(`Repeats: ${describeRecurrence(revision.recurrence_rule, startKey, revision.timezone)}`);
+  }
   for (const item of revision.recurrence_dates || []) {
     const marker = item.kind === "exclude" ? "−" : "+";
     parts.push(`${marker} ${String(item.local_start).slice(0, 16)} (${item.kind})`);
@@ -2567,6 +2974,7 @@ function bindControls() {
   document.querySelector("#jump-next-year").addEventListener("click", () => jumpYear(1));
   document.querySelector("#create-event-button").addEventListener("click", openCreateEventForm);
   document.querySelector("#event-all-day").addEventListener("change", syncTimingFields);
+  bindRecurrenceControls();
   document.querySelector("#add-recurrence-date").addEventListener("click", () => addRecurrenceDate());
   document.querySelector("#submitter-channel").addEventListener("change", updateSubmitterContactType);
   eventForm.addEventListener("submit", submitEventForm);

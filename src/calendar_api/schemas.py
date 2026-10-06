@@ -189,9 +189,21 @@ class EventRevisionInput(StrictModel):
                 else self.starts_at.astimezone(zone)
             )
             try:
-                rrulestr(self.recurrence_rule, dtstart=recurrence_start)
+                rule = rrulestr(self.recurrence_rule, dtstart=recurrence_start)
+                first = rule.after(recurrence_start, inc=True)
             except (ValueError, TypeError) as exc:
                 raise ValueError(f"invalid RFC 5545 RRULE: {exc}") from exc
+            # Expansion always keeps the event start as an occurrence, while
+            # dateutil skips a DTSTART that does not match the rule. Requiring
+            # the start to be the series' first date keeps COUNT honest and
+            # stops an off-pattern extra date from appearing.
+            if first is None:
+                raise ValueError("recurrence ends before the event starts")
+            if first != recurrence_start:
+                raise ValueError(
+                    "the event start must be the first date of its repeating "
+                    "schedule; move the start onto the pattern"
+                )
         return self
 
 

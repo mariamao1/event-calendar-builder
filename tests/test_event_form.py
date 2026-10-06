@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -139,7 +140,14 @@ def test_calendar_shell_contains_complete_event_form(tmp_path: Path) -> None:
         'id="event-description"',
         'id="event-starts-at"',
         'id="event-start-date"',
-        'id="event-recurrence-rule"',
+        'id="event-recurrence-frequency"',
+        'id="event-recurrence-interval"',
+        'id="recurrence-weekdays"',
+        'id="recurrence-positions"',
+        'name="recurrence-end"',
+        'id="event-recurrence-until"',
+        'id="event-recurrence-count"',
+        'id="recurrence-summary"',
         'id="event-groups"',
         'id="submitter-contact"',
         'id="admin-login-form"',
@@ -151,13 +159,17 @@ def test_calendar_shell_contains_complete_event_form(tmp_path: Path) -> None:
         "zonedLocalToIso",
         "X-Event-Management-Token",
         "managementLink",
+        "function recurrenceRuleFromSettings",
+        "function recurrenceSettingsFromRule",
+        "function recurrencePositions",
+        "function appendRepeatIcon",
     ):
         assert symbol in javascript
 
     form = shell.split('<form id="event-form"', 1)[1].split("</form>", 1)[0]
     assert form.count(" required") == 2
     assert '<select id="event-timezone"' in form
-    assert '<select id="event-recurrence-rule"' in form
+    assert '<select id="event-recurrence-frequency"' in form
     assert '<span class="field-heading">Title <span aria-hidden="true">*</span>' in form
     assert '<span class="field-heading">Name <span aria-hidden="true">*</span>' in form
 
@@ -185,3 +197,70 @@ def test_optional_contact_and_groups_still_publish_unfiltered(tmp_path: Path) ->
             "Ungrouped event"
         ]
         assert calendar.json()["items"][0]["groups"] == []
+
+
+def test_weekly_series_built_by_the_form_appears_on_the_calendar(tmp_path: Path) -> None:
+    # The form sends explicit weekdays and, for "Ends on", 23:59 local in UTC.
+    zone = ZoneInfo("America/New_York")
+    today = datetime.now(zone).date()
+    first = today + timedelta(days=(1 - today.weekday()) % 7 + 7)  # a Tuesday
+    last = first + timedelta(days=16)  # the Thursday two weeks later
+    until = datetime.combine(last, datetime.min.time().replace(hour=23, minute=59), zone)
+    starts_at = datetime.combine(first, datetime.min.time().replace(hour=18), zone)
+
+    with _client(tmp_path) as client:
+        group = _group(client)
+        payload = _payload(group["id"], "Run club")
+        payload.update(
+            {
+                "is_all_day": False,
+                "start_date": None,
+                "end_date": None,
+                "starts_at": starts_at.isoformat(),
+                "ends_at": (starts_at + timedelta(hours=1)).isoformat(),
+                "recurrence_rule": "FREQ=WEEKLY;INTERVAL=2;BYDAY=TU,TH;UNTIL="
+                + until.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ"),
+            }
+        )
+        created = client.post(
+            "/api/v1/admin/events",
+            headers={"X-Admin-Key": "test-admin-key"},
+            json=payload,
+        )
+        assert created.status_code == 201, created.text
+        assert created.json()["occurrence_count"] == 4
+
+        calendar = client.get(
+            f"/api/v1/calendar?start={first.isoformat()}"
+            f"&end={(first + timedelta(days=28)).isoformat()}"
+            "&timezone=America/New_York"
+        )
+        assert calendar.status_code == 200, calendar.text
+        items = calendar.json()["items"]
+        days = [
+            datetime.fromisoformat(item["starts_at"]).astimezone(zone).date()
+            for item in items
+        ]
+        assert days == [
+            first,
+            first + timedelta(days=2),
+            first + timedelta(days=14),
+            first + timedelta(days=16),
+        ]
+        assert all(item["recurrence_rule"].startswith("FREQ=WEEKLY") for item in items)
+        assert all(
+            datetime.fromisoformat(item["starts_at"]).astimezone(zone).hour == 18
+            for item in items
+        )
+
+
+def test_series_starting_off_its_pattern_is_rejected(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        group = _group(client)
+        payload = _payload(group["id"])
+        start = date.fromisoformat(payload["start_date"])
+        other_day = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"][(start.weekday() + 1) % 7]
+        payload["recurrence_rule"] = f"FREQ=WEEKLY;BYDAY={other_day};COUNT=3"
+        response = client.post("/api/v1/events", json=payload)
+        assert response.status_code == 422
+        assert "first date of its repeating schedule" in response.text

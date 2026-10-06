@@ -295,9 +295,33 @@
           <fieldset class="form-section">
             <legend>Repeats <span class="optional-label">optional</span></legend>
             <div class="form-section-body">
-              <label class="field-label field-wide">Recurrence rule<select id="event-recurrence-rule"><option value="">Does not repeat</option><option value="FREQ=DAILY">Daily</option><option value="FREQ=WEEKLY">Weekly</option><option value="FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR">Every weekday</option><option value="FREQ=MONTHLY">Monthly</option><option value="FREQ=YEARLY">Yearly</option></select></label>
+              <div class="field-grid">
+                <label class="field-label">Repeats<select id="event-recurrence-frequency"><option value="">Does not repeat</option><option value="DAILY">Daily</option><option value="WEEKLY">Weekly</option><option value="MONTHLY">Monthly</option><option value="YEARLY">Yearly</option></select></label>
+                <label id="recurrence-interval-field" class="field-label" hidden><span>Every</span><span class="interval-input"><input id="event-recurrence-interval" type="number" min="1" max="99" step="1" value="1" inputmode="numeric" /><span id="recurrence-interval-unit">week</span></span></label>
+              </div>
+              <div id="recurrence-options" class="recurrence-options" hidden>
+                <fieldset id="recurrence-weekdays-field" class="recurrence-choice" hidden>
+                  <legend>On</legend>
+                  <div id="recurrence-weekdays" class="weekday-toggles"></div>
+                </fieldset>
+                <fieldset id="recurrence-position-field" class="recurrence-choice" hidden>
+                  <legend>On</legend>
+                  <div id="recurrence-positions" class="recurrence-radios"></div>
+                  <small id="recurrence-position-note" class="field-help" hidden></small>
+                </fieldset>
+                <fieldset class="recurrence-choice">
+                  <legend>Ends</legend>
+                  <div class="recurrence-radios recurrence-ends">
+                    <label class="check-row"><input type="radio" name="recurrence-end" value="never" checked /> <span>Never</span></label>
+                    <div class="end-row"><label class="check-row"><input type="radio" name="recurrence-end" value="until" /> <span>On</span></label><input id="event-recurrence-until" type="date" aria-label="Last date of the series" /></div>
+                    <div class="end-row"><label class="check-row"><input type="radio" name="recurrence-end" value="count" /> <span>After</span></label><input id="event-recurrence-count" type="number" min="1" max="999" step="1" value="10" inputmode="numeric" aria-label="Number of times" /><span>times</span></div>
+                  </div>
+                </fieldset>
+              </div>
+              <p id="recurrence-custom-note" class="field-help" hidden>This event uses a custom schedule. Pick another option to replace it.</p>
+              <p id="recurrence-summary" class="recurrence-summary" aria-live="polite" hidden></p>
               <div class="recurrence-heading">
-                <span>Included or excluded dates</span>
+                <span>Extra or skipped dates</span>
                 <button id="add-recurrence-date" class="quiet-button" type="button">Add date</button>
               </div>
               <div id="recurrence-date-list" class="recurrence-date-list"></div>

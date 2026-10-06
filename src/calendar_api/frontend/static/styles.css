@@ -1215,6 +1215,154 @@ dialog::backdrop {
   background: var(--forest-soft);
 }
 
+.field-grid[hidden],
+.field-label[hidden],
+.field-help[hidden],
+.recurrence-options[hidden],
+.recurrence-choice[hidden],
+.recurrence-summary[hidden] {
+  display: none;
+}
+
+.interval-input {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--ink);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.field-label .interval-input input {
+  width: 76px;
+}
+
+.recurrence-options {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--soft-line);
+  border-radius: 12px;
+  background: #faf8f2;
+}
+
+.recurrence-choice {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.recurrence-choice legend {
+  margin-bottom: 7px;
+  padding: 0;
+  color: #39443f;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.weekday-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.weekday-toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 46px;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid #d5d7d0;
+  border-radius: 999px;
+  color: #39443f;
+  background: #fff;
+  cursor: pointer;
+  font-size: 0.74rem;
+  font-weight: 750;
+}
+
+.weekday-toggle input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.weekday-toggle:has(input:checked) {
+  border-color: var(--forest);
+  color: #fff;
+  background: var(--forest);
+}
+
+.weekday-toggle:has(input:focus-visible) {
+  outline: 3px solid rgba(23, 76, 61, 0.25);
+  outline-offset: 1px;
+}
+
+.recurrence-radios {
+  display: grid;
+  gap: 8px;
+}
+
+.recurrence-radios .check-row input {
+  accent-color: var(--forest);
+}
+
+.end-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  align-items: center;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.end-row .check-row {
+  min-width: 62px;
+}
+
+.end-row input[type="date"],
+.end-row input[type="number"] {
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid #d5d7d0;
+  border-radius: 10px;
+  color: var(--ink);
+  background: #fff;
+  font: 500 0.8rem/1.35 Inter, ui-sans-serif, system-ui, sans-serif;
+}
+
+.end-row input[type="number"] {
+  width: 76px;
+}
+
+.end-row input:focus {
+  border-color: var(--forest);
+  outline: 3px solid rgba(23, 76, 61, 0.12);
+}
+
+.recurrence-summary {
+  margin: 0;
+  padding: 9px 12px;
+  border-radius: 10px;
+  color: #18392f;
+  background: var(--forest-soft);
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.recurrence-summary.is-warning {
+  color: #7a3020;
+  background: var(--coral-soft);
+}
+
 .recurrence-heading {
   display: flex;
   align-items: center;
@@ -2099,4 +2247,26 @@ dialog::backdrop {
   .event-detail-actions > button {
     flex: 1 1 auto;
   }
+}
+
+.repeat-icon {
+  flex: none;
+  margin-left: 3px;
+  font-size: 0.85em;
+  font-weight: 700;
+  opacity: 0.7;
+}
+
+.timed-event:has(> .repeat-icon) {
+  grid-template-columns: 7px auto minmax(0, 1fr) auto;
+}
+
+.allday-chip:has(> .repeat-icon) {
+  display: flex;
+  align-items: center;
+}
+
+.allday-chip-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }

@@ -41,9 +41,9 @@ def test_only_title_and_submitter_name_need_user_supplied_text() -> None:
 
 def test_rrule_is_normalized_and_cannot_smuggle_dtstart() -> None:
     payload = _base_payload()
-    payload["recurrence_rule"] = "rrule:freq=weekly;byday=mo"
+    payload["recurrence_rule"] = "rrule:freq=weekly;byday=sa"
     parsed = EventRevisionInput.model_validate(payload)
-    assert parsed.recurrence_rule == "FREQ=WEEKLY;BYDAY=MO"
+    assert parsed.recurrence_rule == "FREQ=WEEKLY;BYDAY=SA"
 
     payload["recurrence_rule"] = "DTSTART:20261010\nRRULE:FREQ=DAILY"
     with pytest.raises(ValidationError, match="without DTSTART"):
@@ -101,4 +101,67 @@ def test_until_matches_dtstart_value_type() -> None:
 
     timed["recurrence_rule"] = "FREQ=DAILY;UNTIL=20261012T100000"
     with pytest.raises(ValidationError, match="UNTIL values must be specified in UTC"):
+        EventRevisionInput.model_validate(timed)
+
+
+@pytest.mark.parametrize(
+    "rule",
+    [
+        "FREQ=DAILY;INTERVAL=3;COUNT=4",
+        "FREQ=WEEKLY;INTERVAL=2;BYDAY=TU,SA;UNTIL=20261231",
+        "FREQ=MONTHLY;BYMONTHDAY=10",
+        "FREQ=MONTHLY;BYDAY=2SA;COUNT=6",
+        "FREQ=YEARLY;BYMONTH=10;BYMONTHDAY=10",
+        "FREQ=YEARLY;BYMONTH=10;BYDAY=2SA",
+    ],
+)
+def test_form_patterns_starting_on_their_first_date_are_accepted(rule: str) -> None:
+    # 2026-10-10 is the second Saturday of October.
+    payload = _base_payload()
+    payload["recurrence_rule"] = rule
+    assert EventRevisionInput.model_validate(payload).recurrence_rule == rule
+
+
+def test_last_weekday_and_last_day_patterns_are_accepted() -> None:
+    payload = _base_payload()
+    payload.update({"start_date": "2026-10-31", "end_date": "2026-11-01"})
+    for rule in ("FREQ=MONTHLY;BYDAY=-1SA", "FREQ=MONTHLY;BYMONTHDAY=-1"):
+        payload["recurrence_rule"] = rule
+        assert EventRevisionInput.model_validate(payload).recurrence_rule == rule
+
+
+def test_start_must_be_the_first_date_of_the_schedule() -> None:
+    payload = _base_payload()  # Saturday
+    payload["recurrence_rule"] = "FREQ=WEEKLY;BYDAY=TU,TH;COUNT=4"
+    with pytest.raises(ValidationError, match="first date of its repeating"):
+        EventRevisionInput.model_validate(payload)
+
+    payload["recurrence_rule"] = "FREQ=MONTHLY;BYDAY=1SA"
+    with pytest.raises(ValidationError, match="first date of its repeating"):
+        EventRevisionInput.model_validate(payload)
+
+
+def test_series_cannot_end_before_it_starts() -> None:
+    payload = _base_payload()
+    payload["recurrence_rule"] = "FREQ=DAILY;UNTIL=20261009"
+    with pytest.raises(ValidationError, match="ends before the event starts"):
+        EventRevisionInput.model_validate(payload)
+
+    zone = ZoneInfo("America/New_York")
+    start = datetime(2026, 10, 10, 18, tzinfo=zone)
+    timed = _base_payload()
+    timed.update(
+        {
+            "is_all_day": False,
+            "start_date": None,
+            "end_date": None,
+            "starts_at": start.isoformat(),
+            "ends_at": (start + timedelta(hours=1)).isoformat(),
+            # 23:59 local on the start day is 03:59 UTC the next day.
+            "recurrence_rule": "FREQ=DAILY;UNTIL=20261011T035900Z",
+        }
+    )
+    assert EventRevisionInput.model_validate(timed).recurrence_rule
+    timed["recurrence_rule"] = "FREQ=DAILY;UNTIL=20261010T120000Z"
+    with pytest.raises(ValidationError, match="ends before the event starts"):
         EventRevisionInput.model_validate(timed)
