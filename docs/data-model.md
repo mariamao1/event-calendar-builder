@@ -94,8 +94,32 @@ per-occurrence start/end columns with `is_exception`. A scoped cancellation
 sets `event_occurrences.instance_cancelled` instead: the date stays visible,
 flagged as cancelled (scoped deletion instead flips the row to `cancelled`).
 A later series-wide approval refreshes retained rows and clears both columns,
-so the latest change to the series always persists over earlier exceptions.
-Groups stay series-level: group changes ride on revisions, never on overrides.
+so the latest change to the series always persists over earlier per-date
+edits. Groups stay series-level: group changes ride on revisions, never on
+overrides.
+
+Skipping or cancelling one date is different: it is an exception to the
+series, not an edit of it, so it must not end or alter the series and must
+not silently undo itself. `event_occurrences.instance_exception` records a
+single-date removal as `cancelled` (`instance_cancelled` set, still visible)
+or `skipped` (row `cancelled`, off the calendar). It is deliberately not an
+EXDATE: that would mint a new revision for every skip, conflict with pending
+edits awaiting review, and could not express a visible cancellation.
+Reconciliation preserves it:
+
+- A retained slot keeps its exception. Skipped rows still refresh their timing
+  so a later restore shows the series' current time.
+- `recurrence_id` is a wall-clock slot, so a time-of-day change mints new
+  slots. An exception whose slot vanished moves to the one new slot on the
+  same local day; ambiguous days (several slots) and days the series no
+  longer produces drop the exception.
+- An event that stops repeating drops all exceptions.
+- `restore` (a new review action) clears the exception. Removals from a
+  "future" scope truncate the rule instead and are not restorable dates.
+
+The 006 migration backfills `skipped` for earlier single-date deletions (by
+their `deleted single occurrence` reason). Earlier single-date cancellations
+cannot be told apart from "future" ones and are left as non-durable flags.
 
 When an approved revision changes:
 

@@ -2313,6 +2313,29 @@ dialog::backdrop {
   color: #74301f;
 }
 
+.series-skipped-date {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 6px 6px 11px;
+  border: 1px dashed var(--soft-line);
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+
+.series-skipped-date span {
+  text-decoration: line-through;
+}
+
+.series-restore {
+  min-height: 28px;
+  margin-left: auto;
+  padding: 3px 10px;
+  font-size: 0.72rem;
+}
+
 .series-date-tag.is-modified-tag {
   background: #dfe9f2;
   color: #244b5d;

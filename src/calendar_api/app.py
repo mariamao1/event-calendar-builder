@@ -909,6 +909,42 @@ def create_app(
                 future_months=settings.materialization_future_months,
             )
 
+    @app.post("/api/v1/events/{event_id}/occurrences/{occurrence_id}/restore")
+    def restore_occurrence(
+        event_id: UUID,
+        occurrence_id: UUID,
+        payload: RemovalInput | None = None,
+        x_event_management_token: Annotated[
+            str | None, Header(alias="X-Event-Management-Token")
+        ] = None,
+        x_admin_key: Annotated[str | None, Header()] = None,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> dict:
+        """Undo a single-date cancellation or skip of a recurring event.
+
+        Only dates cancelled or deleted on their own (`scope=single`) can be
+        restored; anything else reports `409`.
+        """
+        require_event_editor(
+            event_id, x_event_management_token, x_admin_key, authorization
+        )
+        identity = admin_identity(x_admin_key, authorization)
+        actor, note = removal_actor(payload, identity)
+        if payload:
+            require_path_occurrence(
+                payload.occurrence_id or payload.occurrence, occurrence_id
+            )
+        with database.transaction() as connection:
+            return service.restore_occurrence(
+                connection,
+                event_id,
+                occurrence_id,
+                actor=actor,
+                note=note,
+                is_admin=identity is not None,
+                management_token=x_event_management_token,
+            )
+
     @app.post("/api/v1/admin/events/{event_id}/cancel")
     def admin_cancel_event(
         event_id: UUID,

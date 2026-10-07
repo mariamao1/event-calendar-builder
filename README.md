@@ -16,6 +16,7 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/002_event_management_to
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/003_optional_event_contact.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/004_event_cancellation.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/005_occurrence_overrides.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/006_occurrence_exceptions.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/tests/001_initial_schema_smoke.sql
 ```
 
@@ -74,7 +75,12 @@ skipped dates, previous/next date navigation, and the upcoming dates. Viewers
 can copy a link to the event, and its creator can edit it. Editing, cancelling,
 or deleting a date of a repeating event asks whether the change applies to
 only that date, that date and all later ones, or the entire series; a later
-change to the series replaces earlier per-date changes. Signed-in admins
+change to the series replaces earlier per-date edits. Cancelling or deleting
+only one date skips that occurrence without ending or changing the series: it
+stays cancelled (still shown, marked cancelled) or skipped (listed under
+**Skipped dates**) through later edits to the series, even if the series moves
+to a new time of day, until its creator or an admin selects **Restore**.
+Signed-in admins
 also see moderation details (submitter, approval, any pending edit awaiting
 review) and can edit, review a pending edit, or unpublish. The event's creator
 or an admin can cancel the event (it stays visible, marked cancelled) or

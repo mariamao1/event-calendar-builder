@@ -15,8 +15,12 @@ from .errors import ConflictError, NotFoundError, UnauthorizedError, ValidationE
 from .normalization import normalize_contact
 from .occurrence_scopes import (
     CONTENT_OVERRIDE_FIELDS,
+    EXCEPTION_CANCELLED,
+    EXCEPTION_SKIPPED,
+    SKIPPED_REASON,
     apply_content_override,
     build_content_override,
+    match_exceptions_by_day,
     parse_content_override,
 )
 from .recurrence import (
@@ -408,8 +412,16 @@ INSERT INTO event_occurrences (
 )
 ON CONFLICT (event_id, recurrence_id) DO UPDATE SET
   source_revision_id = EXCLUDED.source_revision_id,
-  status = 'scheduled',
-  version = event_occurrences.version + 1,
+  -- A series-wide approval clears per-occurrence edits, so the latest change
+  -- to the series always persists over earlier single/future edits. A
+  -- single-date cancellation or skip is kept, though: the series still
+  -- produces the date, and it should stay cancelled or skipped. Skipped rows
+  -- refresh their timing invisibly, ready for a restore.
+  status = CASE WHEN event_occurrences.instance_exception = 'skipped'
+                THEN 'cancelled'::occurrence_status
+                ELSE 'scheduled'::occurrence_status END,
+  version = event_occurrences.version
+    + CASE WHEN event_occurrences.instance_exception = 'skipped' THEN 0 ELSE 1 END,
   is_exception = EXCLUDED.is_exception,
   is_all_day = EXCLUDED.is_all_day,
   starts_at = EXCLUDED.starts_at,
@@ -417,17 +429,81 @@ ON CONFLICT (event_id, recurrence_id) DO UPDATE SET
   start_date = EXCLUDED.start_date,
   end_date = EXCLUDED.end_date,
   timezone = EXCLUDED.timezone,
-  cancellation_reason = NULL,
-  -- A series-wide approval clears per-occurrence divergence, so the latest
-  -- change to the series always persists over earlier single/future edits.
+  cancellation_reason = CASE WHEN event_occurrences.instance_exception = 'skipped'
+                             THEN event_occurrences.cancellation_reason END,
   content_override = NULL,
-  instance_cancelled = FALSE
+  instance_cancelled =
+    event_occurrences.instance_exception IS NOT DISTINCT FROM 'cancelled'
 """
 
 _OCCURRENCE_INSERT_IGNORE = (
     _OCCURRENCE_UPSERT.split("ON CONFLICT (event_id, recurrence_id)")[0]
     + "ON CONFLICT (event_id, recurrence_id) DO NOTHING"
 )
+
+
+def _apply_exception(
+    connection: Connection, event_id: UUID, recurrence_id: datetime, exception: str
+) -> None:
+    """Mark one slot cancelled or skipped on its own, unless it already is."""
+    if exception == EXCEPTION_SKIPPED:
+        connection.execute(
+            """
+            UPDATE event_occurrences SET status = 'cancelled',
+              cancellation_reason = %s, instance_cancelled = FALSE,
+              instance_exception = %s, version = version + 1, updated_at = now()
+             WHERE event_id = %s AND recurrence_id = %s
+               AND instance_exception IS NULL
+            """,
+            (SKIPPED_REASON, exception, event_id, recurrence_id),
+        )
+    else:
+        connection.execute(
+            """
+            UPDATE event_occurrences SET instance_cancelled = TRUE,
+              instance_exception = %s, version = version + 1, updated_at = now()
+             WHERE event_id = %s AND recurrence_id = %s
+               AND instance_exception IS NULL
+            """,
+            (exception, event_id, recurrence_id),
+        )
+
+
+def _carry_over_exceptions(
+    connection: Connection,
+    event_id: UUID,
+    desired: list[datetime],
+    *,
+    from_rid: datetime | None = None,
+) -> None:
+    """Keep single-date removals on their day when the series moves slots.
+
+    Call after the new slots exist. An exception whose slot (at or after
+    `from_rid`) the series no longer produces moves to that day's new slot
+    when there is exactly one (a time-of-day change); otherwise it lapses,
+    because the series itself no longer has that date.
+    """
+    wanted = set(desired)
+    orphans = [
+        _as_dict(item)
+        for item in connection.execute(
+            """
+            SELECT id, recurrence_id, instance_exception FROM event_occurrences
+             WHERE event_id = %s AND instance_exception IS NOT NULL
+               AND (%s::timestamp IS NULL OR recurrence_id >= %s)
+            """,
+            (event_id, from_rid, from_rid),
+        ).fetchall()
+        if item["recurrence_id"] not in wanted
+    ]
+    if not orphans:
+        return
+    connection.execute(
+        "UPDATE event_occurrences SET instance_exception = NULL WHERE id = ANY(%s)",
+        ([item["id"] for item in orphans],),
+    )
+    for orphan, slot in match_exceptions_by_day(orphans, desired):
+        _apply_exception(connection, event_id, slot, orphan["instance_exception"])
 
 
 def _reconcile_occurrences(
@@ -490,12 +566,23 @@ def _reconcile_occurrences(
             specs = []
             stable_non_recurring = True
 
+    if new_non_recurring and not stable_non_recurring:
+        # An event that no longer repeats has no dates to skip.
+        connection.execute(
+            """
+            UPDATE event_occurrences SET instance_exception = NULL
+             WHERE event_id = %s AND instance_exception IS NOT NULL
+            """,
+            (event["id"],),
+        )
     if specs:
         _execute_many(
             connection,
             _OCCURRENCE_UPSERT,
             [_occurrence_values(event["id"], revision["id"], spec) for spec in specs],
         )
+    if not stable_non_recurring:
+        _carry_over_exceptions(connection, event["id"], desired_ids)
 
     # Removed future slots remain durable cancellation records. Past slots are
     # historical facts and are intentionally left untouched.
@@ -1070,10 +1157,11 @@ def calendar_occurrences(
 
 
 _SERIES_UPCOMING_LIMIT = 6
+_SERIES_SKIPPED_LIMIT = 20
 _OCCURRENCE_FIELDS = """
     id AS occurrence_id, recurrence_id, is_exception, is_all_day, starts_at,
     ends_at, start_date, end_date, timezone, content_override,
-    instance_cancelled
+    instance_cancelled, instance_exception
 """
 _OCCURRENCE_KEY = "COALESCE(starts_at, start_date::timestamp AT TIME ZONE timezone)"
 
@@ -1084,10 +1172,11 @@ def _series_context(
     selected: dict | None,
     now: datetime,
 ) -> dict:
-    """Neighbouring and upcoming scheduled dates of a recurring event.
+    """Neighbouring, upcoming, and skipped dates of a recurring event.
 
     Only materialized occurrences are visible, so counts and lists are bounded
-    by the rolling window that ends at `coverage_end`.
+    by the rolling window that ends at `coverage_end`. `skipped` lists upcoming
+    dates deleted on their own, which editors can restore.
     """
     previous = following = None
     if selected is not None:
@@ -1131,6 +1220,21 @@ def _series_context(
         f"SELECT count(*) AS total FROM event_occurrences WHERE {not_ended}",
         not_ended_params,
     ).fetchone()["total"]
+    skipped = connection.execute(
+        f"""
+        SELECT {_OCCURRENCE_FIELDS} FROM event_occurrences
+         WHERE event_id = %(event_id)s AND status = 'cancelled'
+           AND instance_exception = %(skipped)s
+           AND ((NOT is_all_day AND ends_at > %(now)s)
+             OR (is_all_day AND end_date > %(today)s))
+         ORDER BY {_OCCURRENCE_KEY}, id LIMIT %(limit)s
+        """,
+        {
+            **not_ended_params,
+            "skipped": EXCEPTION_SKIPPED,
+            "limit": _SERIES_SKIPPED_LIMIT,
+        },
+    ).fetchall()
     coverage = connection.execute(
         """
         SELECT window_end_exclusive FROM event_occurrence_materializations
@@ -1156,6 +1260,7 @@ def _series_context(
         "next": _public(following),
         "upcoming": [_public(item) for item in upcoming],
         "upcoming_count": upcoming_count,
+        "skipped": [_public(item) for item in skipped],
         "coverage_end": coverage["window_end_exclusive"] if coverage else None,
     }
 
@@ -1474,7 +1579,7 @@ def _log_scope_action(
             """
             INSERT INTO event_review_actions
               (event_id, event_revision_id, action, actor, note, occurred_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s)
             RETURNING id, occurred_at
             """,
             (event_id, revision_id, action, actor, note, now or _now()),
@@ -1495,8 +1600,9 @@ def edit_single_occurrence(
 
     Timing is rewritten in place (the stable recurrence_id still identifies
     the original slot) and divergent descriptive content is stored as an
-    override. A later series-wide edit refreshes and clears the row, so the
-    latest series change always wins. Applies immediately for any authorized
+    override. A date cancelled on its own stays cancelled. A later
+    series-wide edit refreshes and clears the override, so the latest series
+    change always wins. Applies immediately for any authorized
     editor (admin or the event creator), like cancellation and deletion.
     """
     event = _scoped_event(connection, event_id)
@@ -1520,7 +1626,8 @@ def edit_single_occurrence(
           starts_at = %(starts_at)s, ends_at = %(ends_at)s,
           start_date = %(start_date)s, end_date = %(end_date)s,
           timezone = %(timezone)s, content_override = %(override)s,
-          instance_cancelled = FALSE,
+          instance_cancelled =
+            instance_exception IS NOT DISTINCT FROM 'cancelled',
           version = version + 1, updated_at = now()
          WHERE id = %(id)s
         """,
@@ -1696,7 +1803,8 @@ def _approve_scoped_revision(
     """Expand a scoped revision and reconcile only its target range.
 
     Occurrences on or after `scope_rid` are refreshed from the new revision
-    (clearing earlier per-date divergence); scheduled rows in range that the
+    (clearing earlier per-date edits but keeping single-date cancellations
+    and skips); scheduled rows in range that the
     new definition no longer produces are removed according to `mode`:
     "refresh" cancels them (edited away), "remove" cancels them as deleted,
     and "mark" keeps them visible, flagged as cancelled.
@@ -1724,6 +1832,7 @@ def _approve_scoped_revision(
             [_occurrence_values(event["id"], revision["id"], spec) for spec in in_scope],
         )
     desired = [spec.recurrence_id for spec in in_scope]
+    _carry_over_exceptions(connection, event["id"], desired, from_rid=scope_rid)
     if mode == "mark":
         cursor = connection.execute(
             """
@@ -2146,6 +2255,8 @@ def cancel_occurrences(
     Single and future scopes keep the event published: a single date (or every
     date from the target on) stays visible, flagged as cancelled, while other
     dates are untouched. Deletion instead removes the dates from the calendar.
+    A single-date cancellation survives later series edits and can be undone
+    with `restore_occurrence`.
     """
     now = now or _now()
     event = _load_removable_event(connection, event_id)
@@ -2172,9 +2283,10 @@ def cancel_occurrences(
         connection.execute(
             """
             UPDATE event_occurrences SET instance_cancelled = TRUE,
-              version = version + 1, updated_at = now() WHERE id = %s
+              instance_exception = %s, version = version + 1, updated_at = now()
+             WHERE id = %s
             """,
-            (target["id"],),
+            (EXCEPTION_CANCELLED, target["id"]),
         )
         action = _log_scope_action(
             connection, full_event["id"], revision["id"], "cancel", actor, note, now
@@ -2245,8 +2357,9 @@ def delete_occurrences(
 
     Single and future scopes remove only those dates from the calendar (past
     dates and, for single, later dates stay); the event itself is never
-    archived. A later series-wide edit can bring removed dates back with new
-    content, so the latest series change always wins.
+    archived. A single deleted date is a skip: it stays skipped through later
+    series edits that still produce it and can be undone with
+    `restore_occurrence`.
     """
     now = now or _now()
     event = _load_removable_event(connection, event_id)
@@ -2271,11 +2384,11 @@ def delete_occurrences(
         connection.execute(
             """
             UPDATE event_occurrences SET status = 'cancelled',
-              version = version + 1,
-              cancellation_reason = 'deleted single occurrence',
+              version = version + 1, cancellation_reason = %s,
+              instance_cancelled = FALSE, instance_exception = %s,
               updated_at = now() WHERE id = %s
             """,
-            (target["id"],),
+            (SKIPPED_REASON, EXCEPTION_SKIPPED, target["id"]),
         )
         action = _log_scope_action(
             connection, full_event["id"], revision["id"], "delete", actor, note, now
@@ -2323,6 +2436,69 @@ def delete_occurrences(
         "revision_id": truncated["revision_id"],
         "review_action_id": truncated["review_action_id"],
         "reviewed_at": truncated["reviewed_at"],
+    }
+
+
+def restore_occurrence(
+    connection: Connection,
+    event_id: UUID,
+    occurrence_id: UUID,
+    *,
+    actor: str,
+    note: str | None = None,
+    is_admin: bool = False,
+    management_token: str | None = None,
+    now: datetime | None = None,
+) -> dict:
+    """Undo a single-date cancellation or skip of a recurring event.
+
+    A cancelled date loses its cancelled flag; a skipped date returns to the
+    calendar with the series' current timing (and any per-date edits it had).
+    Only dates cancelled or deleted on their own are restorable: removals
+    from a "future" scope ended the series rule, so restoring those dates
+    means editing the series.
+    """
+    now = now or _now()
+    event = _load_removable_event(connection, event_id)
+    _require_removal_permission(
+        event, is_admin=is_admin, management_token=management_token
+    )
+    full_event = _scoped_event(connection, event_id)
+    revision, _ = _published_for_scope(connection, full_event)
+    row = connection.execute(
+        """
+        SELECT * FROM event_occurrences
+         WHERE id = %s AND event_id = %s FOR UPDATE
+        """,
+        (occurrence_id, full_event["id"]),
+    ).fetchone()
+    if row is None:
+        raise NotFoundError("occurrence not found")
+    exception = row["instance_exception"]
+    if exception is None:
+        raise ConflictError(
+            "only a date cancelled or deleted on its own can be restored"
+        )
+    connection.execute(
+        """
+        UPDATE event_occurrences SET status = 'scheduled',
+          cancellation_reason = NULL, instance_cancelled = FALSE,
+          instance_exception = NULL, version = version + 1, updated_at = now()
+         WHERE id = %s
+        """,
+        (row["id"],),
+    )
+    action = _log_scope_action(
+        connection, full_event["id"], revision["id"], "restore", actor, note, now
+    )
+    return {
+        "event_id": full_event["id"],
+        "occurrence_id": row["id"],
+        "restored": exception,
+        "version": row["version"] + 1,
+        "restored_at": now.isoformat(),
+        "review_action_id": action["id"],
+        "reviewed_at": action["occurred_at"],
     }
 
 

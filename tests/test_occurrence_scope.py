@@ -168,7 +168,8 @@ def test_single_edit_can_reschedule_one_occurrence(tmp_path: Path) -> None:
 
 
 def test_series_edit_replaces_single_exception(tmp_path: Path) -> None:
-    """The latest change to the series always persists over per-date edits."""
+    """The latest change to the series always persists over per-date edits,
+    while a date cancelled on its own stays cancelled."""
     with _client(tmp_path) as client:
         event_id = _publish(client, _payload())
         occurrences = _occurrences(client, event_id)
@@ -195,7 +196,7 @@ def test_series_edit_replaces_single_exception(tmp_path: Path) -> None:
         items = _occurrences(client, event_id)
         assert [item["title"] for item in items] == ["Choir (new room)"] * 5
         assert all(item.get("has_override") is False for item in items)
-        assert all(item["is_cancelled"] is False for item in items)
+        assert [item["is_cancelled"] for item in items] == [True] + [False] * 4
 
 
 def test_future_edit_changes_target_and_later_only(tmp_path: Path) -> None:

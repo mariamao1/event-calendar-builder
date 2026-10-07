@@ -1428,6 +1428,29 @@ function renderSeriesSection(view) {
     return item;
   }));
 
+  // Dates deleted on their own stay skipped through later series edits;
+  // editors can bring each one back.
+  const skippedDates = series.skipped || [];
+  const canRestore = isAdminSignedIn() || creatorToken(event.event_id);
+  document.querySelector("#event-series-skipped-section").hidden = skippedDates.length === 0;
+  document.querySelector("#event-series-skipped").replaceChildren(...skippedDates.map((occurrence) => {
+    const item = document.createElement("li");
+    item.className = "series-skipped-date";
+    const label = document.createElement("span");
+    label.textContent = formatOccurrenceLabel(occurrence);
+    item.append(label);
+    if (canRestore) {
+      const restore = document.createElement("button");
+      restore.type = "button";
+      restore.className = "quiet-button series-restore";
+      restore.textContent = "Restore";
+      restore.setAttribute("aria-label", `Restore ${formatOccurrenceLabel(occurrence)}`);
+      restore.addEventListener("click", () => restoreOccurrence(occurrence, restore));
+      item.append(restore);
+    }
+    return item;
+  }));
+
   const more = document.querySelector("#event-series-more");
   const remaining = series.upcoming_count - series.upcoming.length;
   const coverageEnd = series.coverage_end
@@ -1492,17 +1515,22 @@ function renderEventActions(view) {
   const review = document.querySelector("#review-event-edit-button");
   const unpublish = document.querySelector("#unpublish-event-button");
   const cancel = document.querySelector("#cancel-event-button");
+  const restore = document.querySelector("#restore-date-button");
   const remove = document.querySelector("#delete-event-button");
   const canRemove = admin || creatorToken(eventId);
+  const selected = view.timingLabel === "When" ? view.timing : null;
   copy.hidden = !available;
   copy.textContent = "Copy link";
   document.querySelector("#event-share-fallback").hidden = true;
   edit.hidden = !available || !canRemove;
   unpublish.hidden = !available || !admin;
-  cancel.hidden = !available || !canRemove || Boolean(view.event?.is_cancelled);
+  cancel.hidden = !available || !canRemove || Boolean(view.event?.is_cancelled || selected?.is_cancelled);
+  // Only a date cancelled on its own can be restored; dates cancelled with
+  // "this and future" ended the series, so bringing them back is a series edit.
+  restore.hidden = !available || !canRemove || selected?.instance_exception !== "cancelled";
   remove.hidden = !available || !canRemove;
   review.hidden = !admin || document.querySelector("#event-admin-pending").hidden;
-  copy.parentElement.hidden = [copy, edit, review, unpublish, cancel, remove].every((button) => button.hidden);
+  copy.parentElement.hidden = [copy, edit, review, unpublish, cancel, restore, remove].every((button) => button.hidden);
 }
 
 function currentEventShareUrl() {
@@ -1535,7 +1563,8 @@ async function copyEventLink() {
 // Choosing what a change to a repeating event applies to: one date, that
 // date and every later one, or the whole series. Resolves with the chosen
 // scope ("single", "future", or "series"), or null when the dialog is
-// dismissed. A later change to the series replaces earlier per-date changes.
+// dismissed. A later change to the series replaces earlier per-date edits,
+// while dates cancelled or deleted on their own stay that way until restored.
 const scopeDialog = document.querySelector("#scope-dialog");
 let scopeResolve = null;
 
@@ -1677,7 +1706,7 @@ async function cancelEventFromDetail() {
     if (scope !== "series") occurrenceId = occurrence.occurrence_id;
   }
   const warning = scope === "single"
-    ? `Cancel the occurrence on ${formatOccurrenceLabel(occurrence)}? It will stay on the calendar marked as cancelled.`
+    ? `Cancel the occurrence on ${formatOccurrenceLabel(occurrence)}? It will stay on the calendar marked as cancelled. You can restore it later.`
     : scope === "future"
       ? `Cancel the occurrence on ${formatOccurrenceLabel(occurrence)} and every later date? They will stay on the calendar marked as cancelled.`
       : `Cancel "${title}"? It will stay on the calendar marked as cancelled.`;
@@ -1711,7 +1740,7 @@ async function deleteEventFromDetail() {
     if (scope !== "series") occurrenceId = occurrence.occurrence_id;
   }
   const warning = scope === "single"
-    ? `Delete the occurrence on ${formatOccurrenceLabel(occurrence)}? It will leave the calendar. The rest of the series stays.`
+    ? `Delete the occurrence on ${formatOccurrenceLabel(occurrence)}? It will leave the calendar. The rest of the series stays, and you can restore the date from the event details.`
     : scope === "future"
       ? `Delete the occurrence on ${formatOccurrenceLabel(occurrence)} and every later date? They will leave the calendar.`
       : `Delete "${title}"? It will be permanently removed from the calendar for everyone.`;
@@ -1729,6 +1758,30 @@ async function deleteEventFromDetail() {
   } catch (error) {
     button.disabled = false;
     failRemoval(error);
+  }
+}
+
+async function restoreOccurrence(occurrence, button) {
+  const { eventId, view } = eventDetail;
+  if (!occurrence || !(isAdminSignedIn() || creatorToken(eventId))) return;
+  const title = view?.event?.title || "this event";
+  const label = formatOccurrenceLabel(occurrence);
+  button.disabled = true;
+  setEventDetailError("");
+  try {
+    await jsonRequest(`/api/v1/events/${eventId}/occurrences/${occurrence.occurrence_id}/restore`, {
+      method: "POST",
+      headers: removalHeaders(),
+    });
+    // Stay in the detail view, now showing the restored date.
+    eventDetail.occurrenceId = occurrence.occurrence_id;
+    writeEventUrl();
+    await Promise.all([loadEventDetail(), loadMonth()]);
+    statusRegion.textContent = `“${title}” on ${label} was restored.`;
+  } catch (error) {
+    failRemoval(error);
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -3200,6 +3253,10 @@ function bindControls() {
   document.querySelector("#review-event-edit-button").addEventListener("click", reviewEventFromDetail);
   document.querySelector("#unpublish-event-button").addEventListener("click", unpublishEventFromDetail);
   document.querySelector("#cancel-event-button").addEventListener("click", cancelEventFromDetail);
+  document.querySelector("#restore-date-button").addEventListener("click", (event) => {
+    const { view } = eventDetail;
+    restoreOccurrence(view?.timingLabel === "When" ? view.timing : null, event.currentTarget);
+  });
   document.querySelector("#delete-event-button").addEventListener("click", deleteEventFromDetail);
   eventDialog.addEventListener("close", closeEventDetail);
   document.querySelector("#review-approve-button").addEventListener("click", () => {

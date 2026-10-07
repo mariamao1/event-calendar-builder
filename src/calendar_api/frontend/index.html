@@ -156,6 +156,10 @@
           </div>
           <h4 class="series-list-heading">Upcoming dates</h4>
           <ol id="event-series-upcoming" class="series-dates"></ol>
+          <div id="event-series-skipped-section" hidden>
+            <h4 class="series-list-heading">Skipped dates</h4>
+            <ul id="event-series-skipped" class="series-dates series-skipped"></ul>
+          </div>
           <p id="event-series-more" class="series-more"></p>
         </section>
         <section id="event-dialog-admin" class="event-admin-panel" aria-labelledby="event-admin-heading" hidden>
@@ -170,6 +174,7 @@
           <span class="event-actions-spacer" aria-hidden="true"></span>
           <button class="quiet-button danger-button" id="unpublish-event-button" type="button" hidden>Unpublish</button>
           <button class="quiet-button" id="cancel-event-button" type="button" hidden>Cancel event</button>
+          <button class="quiet-button" id="restore-date-button" type="button" hidden>Restore date</button>
           <button class="quiet-button danger-button" id="delete-event-button" type="button" hidden>Delete</button>
           <button class="quiet-button" id="review-event-edit-button" type="button" hidden>Review pending edit</button>
           <button class="primary-button" id="edit-event-button" type="button" hidden>Edit event</button>
@@ -195,7 +200,7 @@
           <label class="check-row scope-option"><input type="radio" name="scope-choice" value="future" /> <span>This and all future occurrences<small id="scope-future-hint" class="scope-hint"></small></span></label>
           <label class="check-row scope-option"><input type="radio" name="scope-choice" value="series" /> <span>Entire series<small class="scope-hint">Every date in the series, past and future.</small></span></label>
         </div>
-        <p class="field-help">A later change to the series replaces earlier per-date changes.</p>
+        <p class="field-help">A later change to the series replaces earlier per-date edits. Dates cancelled or deleted on their own stay that way until restored.</p>
         <div class="form-footer-actions scope-footer">
           <button class="quiet-button" type="button" data-close="scope-dialog">Back</button>
           <button class="primary-button" id="scope-confirm" type="button">Continue</button>

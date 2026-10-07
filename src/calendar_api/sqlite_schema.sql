@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS event_review_actions (
   id TEXT PRIMARY KEY,
   event_id TEXT NOT NULL REFERENCES events(id),
   event_revision_id TEXT NOT NULL REFERENCES event_revisions(id),
-  action TEXT NOT NULL CHECK (action IN ('approve', 'reject', 'revoke', 'cancel', 'delete')),
+  action TEXT NOT NULL CHECK (action IN ('approve', 'reject', 'revoke', 'cancel', 'delete', 'restore')),
   actor TEXT NOT NULL,
   note TEXT,
   occurred_at TEXT NOT NULL
@@ -109,6 +109,11 @@ CREATE TABLE IF NOT EXISTS event_occurrences (
   -- A later series-wide edit clears both, so the latest series change wins.
   content_override TEXT,
   instance_cancelled INTEGER NOT NULL DEFAULT 0 CHECK (instance_cancelled IN (0, 1)),
+  -- A single-date removal ('cancelled' keeps the date visible and flagged;
+  -- 'skipped' removes it). Unlike per-date edits it survives later
+  -- series-wide edits while the series still produces that date, and it can
+  -- be restored.
+  instance_exception TEXT CHECK (instance_exception IN ('cancelled', 'skipped')),
   materialized_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE (event_id, recurrence_id)

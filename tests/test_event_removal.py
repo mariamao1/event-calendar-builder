@@ -193,7 +193,7 @@ def _write_stale_schema(db_path: Path) -> None:
     stale = schema.replace(
         ",\n  cancelled_at TEXT,\n  cancelled_by TEXT,\n  cancel_reason TEXT", ""
     ).replace(
-        "('approve', 'reject', 'revoke', 'cancel', 'delete')",
+        "('approve', 'reject', 'revoke', 'cancel', 'delete', 'restore')",
         "('approve', 'reject', 'revoke')",
     )
     assert stale != schema

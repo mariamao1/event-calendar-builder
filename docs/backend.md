@@ -118,6 +118,7 @@ Public routes:
 | `POST` | `/api/v1/events/{event_id}/occurrences/{occurrence_id}/edit` | Edit one date (`scope=single`, default) or future dates (`scope=future`) |
 | `POST` | `/api/v1/events/{event_id}/occurrences/{occurrence_id}/cancel` | Cancel one date or future dates, kept visible, marked cancelled |
 | `DELETE` | `/api/v1/events/{event_id}/occurrences/{occurrence_id}` | Delete one date or future dates from the calendar |
+| `POST` | `/api/v1/events/{event_id}/occurrences/{occurrence_id}/restore` | Restore one date that was cancelled or deleted on its own |
 
 Admin routes (require admin authentication, see below):
 
@@ -143,8 +144,10 @@ revision and its active groups it returns `recurrence_dates` and `occurrence`
 longer scheduled). It also returns `series`, which is `null` for one-off events.
 For repeating events, `series` holds the `previous`/`next` scheduled dates
 around the requested one, up to six `upcoming` dates with `upcoming_count`, and
-`coverage_end`, where the materialized window ends. Submitter details are never
-included.
+`coverage_end`, where the materialized window ends, plus up to 20 upcoming
+`skipped` dates (deleted on their own, restorable). Occurrence objects carry
+`instance_exception` (`"cancelled"`, `"skipped"`, or `null`). Submitter
+details are never included.
 
 Removal distinguishes cancellation from deletion. Cancelling
 (`POST /api/v1/events/{event_id}/cancel`) means "this event is cancelled": the
@@ -201,13 +204,35 @@ Mechanics:
   becomes an `UNTIL` on the last kept day) and mark or remove every later
   date. Targeting the first date falls back to the whole-series removal.
 - A later series-wide edit refreshes every retained occurrence and clears
-  per-occurrence overrides and flags, so the latest change to the series
-  always persists over earlier single/future exceptions. The calendar and
+  per-occurrence content overrides, so the latest change to the series
+  always persists over earlier single/future edits. The calendar and
   detail views expose diverged dates via `has_override` (and per-date
   `is_cancelled`), and the UI marks them Modified/Cancelled in the series
   list. Scoped cancellations and deletions record `cancel`/`delete` review
   actions; single-date edits bump the occurrence version against the published
   revision.
+
+### Skipped and cancelled single dates
+
+A `single` cancel or delete is an exception to the series rather than an
+edit of it: the published rule, recurrence dates, and revision are
+untouched. Unlike per-date content edits, the exception is durable:
+
+- Series-wide and `future` edits that still produce the date keep it
+  cancelled or skipped. If the edit moves the series to another time of day,
+  the exception follows to the new slot on the same local day. If the series
+  no longer produces that day (or stops repeating), the exception lapses.
+- Editing a date cancelled on its own keeps it cancelled.
+- `POST /api/v1/events/{event_id}/occurrences/{occurrence_id}/restore`
+  (creator or admin) undoes it. A cancelled date loses its flag; a skipped
+  date returns with the series' current timing. It records a `restore`
+  review action. Only dates cancelled or deleted on their own are
+  restorable (`409` otherwise, including dates removed by a `future`
+  scope, which ended the series rule).
+
+The detail view lists upcoming skipped dates under **Skipped dates** with a
+**Restore** button for editors, and a date cancelled on its own shows
+**Restore date** in place of **Cancel event**.
 
 Creating an event returns a one-time `management_token`. Creator reads and edits
 send it in `X-Event-Management-Token`; only its SHA-256 digest is stored. The

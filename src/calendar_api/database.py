@@ -116,17 +116,18 @@ class SQLiteDatabase:
 
 
 def _migrate_review_actions(connection: sqlite3.Connection, schema: str) -> None:
-    """Rebuild event_review_actions when its CHECK predates cancel/delete.
+    """Rebuild event_review_actions when its CHECK predates newer actions.
 
     SQLite cannot alter a CHECK constraint, so a database created by an older
-    release would reject the `cancel` and `delete` audit actions with a 500.
+    release would reject the `cancel`, `delete`, and `restore` audit actions
+    with a 500.
     The table is a leaf (nothing references it), so rename, recreate from the
     current schema, copy, and drop preserves every existing audit row.
     """
     row = connection.execute(
         "SELECT sql FROM sqlite_master WHERE name = 'event_review_actions'"
     ).fetchone()
-    if row is None or "'cancel'" in row[0]:
+    if row is None or "'restore'" in row[0]:
         return
     start = schema.index("CREATE TABLE IF NOT EXISTS event_review_actions")
     end = schema.index(";", start)
@@ -153,8 +154,9 @@ def _migrate_occurrence_overrides(connection: sqlite3.Connection) -> None:
 
     SQLite's CREATE TABLE cannot add fields to an existing table, so a
     database created before scoped single/future edits gains `content_override`
-    (a JSON object merged over the published revision) and `instance_cancelled`
-    (a scoped cancellation that stays visible) here instead of being recreated.
+    (a JSON object merged over the published revision), `instance_cancelled`
+    (a scoped cancellation that stays visible), and `instance_exception` (a
+    durable, restorable single-date removal) here instead of being recreated.
     """
     occurrence_columns = {
         row[1] for row in connection.execute("PRAGMA table_info(event_occurrences)")
@@ -165,6 +167,21 @@ def _migrate_occurrence_overrides(connection: sqlite3.Connection) -> None:
         connection.execute(
             "ALTER TABLE event_occurrences ADD COLUMN instance_cancelled INTEGER "
             "NOT NULL DEFAULT 0 CHECK (instance_cancelled IN (0, 1))"
+        )
+    if "instance_exception" not in occurrence_columns:
+        # Durable single-date removals. Earlier single-date deletions are
+        # identifiable by their reason; earlier single-date cancellations
+        # cannot be told apart from "future" ones, so they stay as they were.
+        connection.execute(
+            "ALTER TABLE event_occurrences ADD COLUMN instance_exception TEXT "
+            "CHECK (instance_exception IN ('cancelled', 'skipped'))"
+        )
+        connection.execute(
+            """
+            UPDATE event_occurrences SET instance_exception = 'skipped'
+             WHERE status = 'cancelled'
+               AND cancellation_reason = 'deleted single occurrence'
+            """
         )
 
 
