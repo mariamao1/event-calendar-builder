@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+from collections.abc import Iterable
 from datetime import date, datetime, time, timedelta
 from typing import Annotated, Literal
 from urllib.parse import urlparse
@@ -43,6 +45,48 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+# Distinct color identifiers for groups, shared by the API, the SQLite and
+# PostgreSQL migrations, and the calendar frontend palette.
+GROUP_COLOR_PALETTE = (
+    "#447d68",
+    "#d8674b",
+    "#4f8097",
+    "#b98420",
+    "#7c6ca6",
+    "#b5527a",
+    "#5e7d2f",
+    "#8a6a4f",
+)
+
+_GROUP_COLOR_PATTERN = re.compile(r"#[0-9a-f]{6}")
+
+
+def _normalize_group_color(value: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError("must be a hex color like #a1b2c3")
+    normalized = value.strip().lower()
+    if not _GROUP_COLOR_PATTERN.fullmatch(normalized):
+        raise ValueError("must be a hex color like #a1b2c3")
+    return normalized
+
+
+GroupColor = Annotated[str, AfterValidator(_normalize_group_color)]
+
+
+def next_group_color(used_colors: Iterable[str]) -> str:
+    """Return the first palette color no live group uses.
+
+    Colors compare case-insensitively (stored colors are lowercase). When
+    every palette color is taken, cycle by the number of colors in use so a
+    new group still gets a deterministic identifier.
+    """
+    used = {str(color).strip().lower() for color in used_colors}
+    for candidate in GROUP_COLOR_PALETTE:
+        if candidate not in used:
+            return candidate
+    return GROUP_COLOR_PALETTE[len(used) % len(GROUP_COLOR_PALETTE)]
+
+
 class GroupCreate(StrictModel):
     slug: Annotated[
         str,
@@ -58,6 +102,8 @@ class GroupCreate(StrictModel):
     description: Annotated[
         str, StringConstraints(strip_whitespace=True, max_length=2000)
     ] = ""
+    # Omitted (or null) means "assign the next unused palette color".
+    color: GroupColor | None = None
 
 
 class GroupUpdate(StrictModel):
@@ -65,7 +111,17 @@ class GroupUpdate(StrictModel):
     description: (
         Annotated[str, StringConstraints(strip_whitespace=True, max_length=2000)] | None
     ) = None
+    color: GroupColor | None = None
     is_active: bool | None = None
+
+    @field_validator("name", "description", "color", "is_active", mode="before")
+    @classmethod
+    def reject_explicit_null(cls, value: object) -> object:
+        # Defaults are not validated, so reaching here with None means the
+        # caller sent an explicit null, which can never clear a group field.
+        if value is None:
+            raise ValueError("must not be null")
+        return value
 
     @model_validator(mode="after")
     def at_least_one_change(self) -> GroupUpdate:

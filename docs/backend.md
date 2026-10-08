@@ -127,7 +127,8 @@ Admin routes (require admin authentication, see below):
 | `POST` | `/api/v1/admin/login` | Username/password login, issues a session token |
 | `POST` | `/api/v1/admin/logout` | Revoke the calling session token |
 | `GET/POST` | `/api/v1/admin/groups` | List all/create groups |
-| `PATCH` | `/api/v1/admin/groups/{group_id}` | Rename, describe, activate/deactivate |
+| `PATCH` | `/api/v1/admin/groups/{group_id}` | Rename, describe, recolor, activate/deactivate |
+| `DELETE` | `/api/v1/admin/groups/{group_id}` | Delete a group; its events stay visible without it |
 | `GET` | `/api/v1/admin/events?status=pending` | Moderation queue |
 | `GET` | `/api/v1/admin/events/{event_id}` | Audit view with all revisions |
 | `POST` | `/api/v1/admin/events` | Create and immediately approve an event |

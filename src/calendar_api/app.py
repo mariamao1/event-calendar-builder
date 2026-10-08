@@ -388,6 +388,22 @@ def create_app(
         with database.transaction() as connection:
             return service.update_group(connection, group_id, payload)
 
+    @app.delete(
+        "/api/v1/admin/groups/{group_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+        dependencies=[admin],
+    )
+    def delete_group(group_id: UUID) -> None:
+        """Delete a group (admin only).
+
+        Deletion retires the group as a tombstone: it is no longer listed,
+        assignable, or shown, while events that carried it stay visible
+        without it. Its slug becomes free for a new group.
+        """
+        with database.transaction() as connection:
+            service.delete_group(connection, group_id)
+        return None
+
     @app.post(
         "/api/v1/events",
         status_code=status.HTTP_202_ACCEPTED,

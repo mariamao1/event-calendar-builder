@@ -142,6 +142,21 @@ An event revision and a subscription can each belong to multiple groups through
 join tables. Group changes to an event therefore go through approval like any
 other content edit.
 
+Every group carries a lowercase `#rrggbb` color identifier; a group created
+without one takes the next unused palette color. Group management (create,
+rename, recolor, activate/deactivate, delete) is admin-only and enforced on
+the server. Non-admin users can only view and filter by groups and assign
+them to submitted events.
+
+Deactivating a group (`is_active = false`) hides the group and events tagged
+only with it. Deleting a group instead retires it as a tombstone
+(`deleted_at`, also deactivating it): the group is no longer listed,
+assignable, or shown anywhere — including admin reads — while events that
+carried it stay visible without it. Assignment and history rows are kept
+(revision immutability forbids removing them), so every read ignores deleted
+groups; slug uniqueness applies to live groups only, freeing a deleted
+group's slug for reuse.
+
 A subscription has one delivery channel/value, one or more groups, and supports
 `immediate`, `daily`, or `weekly` cadence. Digest delivery uses the subscriber's
 timezone, local `digest_time`, and (for weekly cadence) weekday `0..6` where 0 is

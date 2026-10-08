@@ -88,6 +88,8 @@ const state = {
   timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
   request: null,
   jumpYear: now.getFullYear(),
+  // Slug of the group the calendar is filtered to ("" means all groups).
+  activeGroup: "",
 };
 
 function utcDate(year, month, day) {
@@ -164,7 +166,31 @@ function overlapsDay(event, key) {
   return compareKeys(bounds.start, key) <= 0 && compareKeys(bounds.end, key) >= 0;
 }
 
+function hexToChannels(hex) {
+  return [1, 3, 5].map((index) => parseInt(hex.slice(index, index + 2), 16));
+}
+
+function channelsToHex(channels) {
+  return `#${channels.map((value) => Math.round(Math.max(0, Math.min(255, value))).toString(16).padStart(2, "0")).join("")}`;
+}
+
+function mixHex(from, to, amount) {
+  const left = hexToChannels(from);
+  const right = hexToChannels(to);
+  return channelsToHex(left.map((value, index) => value + (right[index] - value) * amount));
+}
+
+function paletteFromSolid(solid) {
+  return { solid, soft: mixHex(solid, "#ffffff", 0.85), ink: mixHex(solid, "#000000", 0.55) };
+}
+
 function groupColor(event) {
+  // Prefer the group's own color identifier from the server; fall back to
+  // the slug-hashed palette for events without one.
+  const color = event.groups?.[0]?.color;
+  if (typeof color === "string" && /^#[0-9a-f]{6}$/i.test(color.trim())) {
+    return paletteFromSolid(color.trim().toLowerCase());
+  }
   const slug = event.groups?.[0]?.slug || "community";
   let hash = 0;
   for (const character of slug) hash = (hash * 31 + character.charCodeAt(0)) | 0;
@@ -812,6 +838,7 @@ async function loadMonth() {
   });
   const token = accessToken();
   if (token) params.set("token", token);
+  if (state.activeGroup) params.append("group", state.activeGroup);
 
   calendarFrame.setAttribute("aria-busy", "true");
   statusRegion.textContent = "";
@@ -1841,6 +1868,15 @@ let eventFormMode = { eventId: null, managementToken: null, stayPending: false, 
 let reviewQueueItems = [];
 let reviewDetail = null;
 let availableGroups = [];
+// Whether the admin manually edited the new-group slug. The slug
+// auto-populates from the group name until touched; clearing it resumes
+// auto-suggest.
+let groupSlugTouched = false;
+// Whether the admin manually picked the new-group color. Until touched, the
+// color input offers the next unused palette color (mirroring the server).
+let groupCreateColorTouched = false;
+// Last admin groups list, used to derive the next unused color locally.
+let adminGroups = [];
 
 function safeSessionGet(key) {
   try {
@@ -2445,15 +2481,274 @@ async function loadEventGroups(selectedIds = []) {
       input.type = "checkbox";
       input.value = group.id;
       input.checked = selected.has(String(group.id));
+      const swatch = document.createElement("span");
+      swatch.className = "group-swatch";
+      swatch.setAttribute("aria-hidden", "true");
+      if (group.color) swatch.style.backgroundColor = group.color;
       const text = document.createElement("span");
       text.textContent = group.name;
-      label.append(input, text);
+      label.append(input, swatch, text);
       return label;
     });
     if (options.length) container.replaceChildren(...options);
     else showState("No groups are available yet.");
   } catch (error) {
     showState(error.message, true);
+  }
+}
+
+// Everyone can filter the calendar by group; only admins manage groups.
+// The filter lists active groups from the public endpoint, while the
+// management dialog uses the admin endpoint (which also shows inactive
+// groups) with the admin session token.
+async function renderGroupFilter() {
+  const select = document.querySelector("#group-filter");
+  const manageButton = document.querySelector("#manage-groups-button");
+  if (!select) return;
+  manageButton.hidden = !isAdminSignedIn();
+  let items = [];
+  try {
+    const body = await jsonRequest(urlWithAccessToken("/api/v1/groups"), {
+      headers: { Accept: "application/json" },
+    });
+    items = body.items || [];
+  } catch (_) {
+    items = [];
+  }
+  const previous = state.activeGroup;
+  select.replaceChildren();
+  const all = document.createElement("option");
+  all.value = "";
+  all.textContent = "All groups";
+  select.append(all);
+  for (const group of items) {
+    const option = document.createElement("option");
+    option.value = group.slug;
+    option.textContent = group.name;
+    select.append(option);
+  }
+  // A deleted or deactivated group disappears from the list; fall back to
+  // showing every group rather than filtering by a stale slug.
+  state.activeGroup = items.some((group) => group.slug === previous) ? previous : "";
+  select.value = state.activeGroup;
+}
+
+function setGroupsError(message) {
+  document.querySelector("#groups-error").textContent = message || "";
+}
+
+function groupRow(group) {
+  const row = document.createElement("div");
+  row.className = "group-row";
+  row.dataset.id = group.id;
+
+  const swatch = document.createElement("span");
+  swatch.className = "group-swatch group-row-swatch";
+  swatch.setAttribute("aria-hidden", "true");
+  swatch.style.backgroundColor = group.color || "#447d68";
+
+  const identity = document.createElement("div");
+  identity.className = "group-row-identity";
+  const nameInput = document.createElement("input");
+  nameInput.className = "group-row-name";
+  nameInput.value = group.name;
+  nameInput.maxLength = 120;
+  nameInput.setAttribute("aria-label", `Rename group ${group.slug}`);
+  const slugLine = document.createElement("span");
+  slugLine.className = "group-row-slug";
+  slugLine.textContent = group.slug;
+  identity.append(nameInput, slugLine);
+
+  const colorInput = document.createElement("input");
+  colorInput.className = "group-row-color";
+  colorInput.type = "color";
+  colorInput.value = /^#[0-9a-f]{6}$/i.test(group.color || "") ? group.color : "#447d68";
+  colorInput.setAttribute("aria-label", `Recolor group ${group.slug}`);
+  colorInput.title = "Group color";
+
+  const activeLabel = document.createElement("label");
+  activeLabel.className = "group-row-active";
+  const activeInput = document.createElement("input");
+  activeInput.type = "checkbox";
+  activeInput.checked = group.is_active !== false;
+  activeLabel.append(activeInput, document.createTextNode(" Active"));
+
+  const deleteButton = document.createElement("button");
+  deleteButton.className = "quiet-button danger-button";
+  deleteButton.type = "button";
+  deleteButton.textContent = "Delete";
+
+  nameInput.addEventListener("change", async () => {
+    const name = nameInput.value.trim();
+    if (!name || name === group.name) {
+      nameInput.value = group.name;
+      return;
+    }
+    await patchGroup(group.id, { name });
+  });
+  colorInput.addEventListener("change", async () => {
+    if (colorInput.value.toLowerCase() === String(group.color).toLowerCase()) return;
+    await patchGroup(group.id, { color: colorInput.value });
+  });
+  activeInput.addEventListener("change", async () => {
+    await patchGroup(group.id, { is_active: activeInput.checked });
+  });
+  deleteButton.addEventListener("click", async () => {
+    if (!window.confirm(`Delete the "${group.name}" group? Its events stay on the calendar without it.`)) return;
+    setGroupsError("");
+    try {
+      await jsonRequest(`/api/v1/admin/groups/${group.id}`, {
+        method: "DELETE",
+        headers: reviewQueueHeaders(),
+      });
+      await refreshGroupsAfterChange();
+    } catch (error) {
+      setGroupsError(handleReviewAuthError(error) || error.message);
+    }
+  });
+
+  row.append(swatch, identity, colorInput, activeLabel, deleteButton);
+  return row;
+}
+
+async function patchGroup(groupId, changes) {
+  setGroupsError("");
+  try {
+    await jsonRequest(`/api/v1/admin/groups/${groupId}`, {
+      method: "PATCH",
+      headers: { ...reviewQueueHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify(changes),
+    });
+    await refreshGroupsAfterChange();
+  } catch (error) {
+    setGroupsError(handleReviewAuthError(error) || error.message);
+    await loadGroupsList();
+  }
+}
+
+async function loadGroupsList() {
+  const list = document.querySelector("#groups-list");
+  list.replaceChildren();
+  const loading = document.createElement("p");
+  loading.className = "group-options-state";
+  loading.textContent = "Loading groups…";
+  list.append(loading);
+  try {
+    const body = await jsonRequest("/api/v1/admin/groups", {
+      headers: reviewQueueHeaders(),
+    });
+    const items = body.items || [];
+    adminGroups = items;
+    if (items.length) list.replaceChildren(...items.map(groupRow));
+    else {
+      const empty = document.createElement("p");
+      empty.className = "group-options-state";
+      empty.textContent = "No groups yet. Create the first one below.";
+      list.replaceChildren(empty);
+    }
+    return items;
+  } catch (error) {
+    const message = handleReviewAuthError(error) || error.message;
+    setGroupsError(message);
+    adminGroups = [];
+    const failed = document.createElement("p");
+    failed.className = "group-options-state is-error";
+    failed.textContent = message;
+    list.replaceChildren(failed);
+    return [];
+  }
+}
+
+async function refreshGroupsAfterChange() {
+  // The management list, the public filter, the event form options, and
+  // the calendar itself all reflect the same groups.
+  const dialog = document.querySelector("#groups-dialog");
+  if (dialog.open) await loadGroupsList();
+  await renderGroupFilter();
+  await loadEventGroups(
+    [...document.querySelectorAll("#event-groups input:checked")].map((input) => input.value)
+  );
+  loadMonth();
+}
+
+async function openGroupsDialog() {
+  if (!isAdminSignedIn()) return;
+  setGroupsError("");
+  groupSlugTouched = document.querySelector("#group-create-slug").value.trim().length > 0;
+  const dialog = document.querySelector("#groups-dialog");
+  if (!dialog.open) dialog.showModal();
+  await loadGroupsList();
+  resetGroupCreateColor();
+}
+
+function suggestGroupSlug(name) {
+  return name
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+}
+
+// Palette mirror of GROUP_COLOR_PALETTE in schemas.py: the create form
+// offers the first color no live group uses, like the server assigns when
+// a group is created without one.
+const GROUP_COLOR_PALETTE = [
+  "#447d68",
+  "#d8674b",
+  "#4f8097",
+  "#b98420",
+  "#7c6ca6",
+  "#b5527a",
+  "#5e7d2f",
+  "#8a6a4f",
+];
+
+function nextGroupColor(usedColors) {
+  const taken = new Set(usedColors.map((color) => String(color).trim().toLowerCase()));
+  for (const candidate of GROUP_COLOR_PALETTE) {
+    if (!taken.has(candidate)) return candidate;
+  }
+  return GROUP_COLOR_PALETTE[taken.size % GROUP_COLOR_PALETTE.length];
+}
+
+function resetGroupCreateColor() {
+  if (groupCreateColorTouched) return;
+  document.querySelector("#group-create-color").value = nextGroupColor(
+    adminGroups.map((group) => group.color)
+  );
+}
+
+async function submitGroupCreateForm(event) {
+  event.preventDefault();
+  const name = document.querySelector("#group-create-name").value.trim();
+  const slugInput = document.querySelector("#group-create-slug").value.trim().toLowerCase();
+  const slug = slugInput || suggestGroupSlug(name);
+  if (!slug) {
+    setGroupsError("Give the group a name so its address can be derived.");
+    return;
+  }
+  setGroupsError("");
+  const payload = {
+    slug,
+    name,
+    color: document.querySelector("#group-create-color").value,
+  };
+  const description = document.querySelector("#group-create-description").value.trim();
+  if (description) payload.description = description;
+  try {
+    await jsonRequest("/api/v1/admin/groups", {
+      method: "POST",
+      headers: { ...reviewQueueHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    document.querySelector("#group-create-form").reset();
+    groupSlugTouched = false;
+    groupCreateColorTouched = false;
+    await refreshGroupsAfterChange();
+    resetGroupCreateColor();
+  } catch (error) {
+    setGroupsError(handleReviewAuthError(error) || error.message);
   }
 }
 
@@ -2810,6 +3105,8 @@ function updateAdminUi() {
   document.querySelector("#admin-login-form").hidden = signedIn;
   document.querySelector("#admin-signed-in").hidden = !signedIn;
   document.querySelector("#admin-name").textContent = name;
+  const manageButton = document.querySelector("#manage-groups-button");
+  if (manageButton) manageButton.hidden = !signedIn;
   if (signedIn) {
     updateReviewQueueButton();
     refreshReviewQueue();
@@ -2859,7 +3156,12 @@ function signOutAdmin() {
   reviewDetail = null;
   if (reviewQueueDialog.open) reviewQueueDialog.close();
   if (reviewDetailDialog.open) reviewDetailDialog.close();
+  const groupsDialog = document.querySelector("#groups-dialog");
+  if (groupsDialog && groupsDialog.open) groupsDialog.close();
+  groupSlugTouched = false;
+  groupCreateColorTouched = false;
   updateAdminUi();
+  renderGroupFilter();
 }
 
 function adminDisplayName() {
@@ -3222,6 +3524,25 @@ function bindControls() {
   });
   document.querySelector("#jump-prev-year").addEventListener("click", () => jumpYear(-1));
   document.querySelector("#jump-next-year").addEventListener("click", () => jumpYear(1));
+  document.querySelector("#group-filter").addEventListener("change", (event) => {
+    state.activeGroup = event.target.value;
+    loadMonth();
+  });
+  document.querySelector("#manage-groups-button").addEventListener("click", openGroupsDialog);
+  document.querySelector("#group-create-form").addEventListener("submit", submitGroupCreateForm);
+  document.querySelector("#group-create-name").addEventListener("input", (event) => {
+    if (groupSlugTouched) return;
+    document.querySelector("#group-create-slug").value = suggestGroupSlug(event.target.value);
+  });
+  document.querySelector("#group-create-slug").addEventListener("input", (event) => {
+    // A manual edit sticks; clearing the field resumes auto-suggest.
+    groupSlugTouched = event.target.value.trim().length > 0;
+  });
+  document.querySelector("#group-create-color").addEventListener("input", () => {
+    // A manual pick sticks; otherwise the form keeps offering the next
+    // unused palette color. Programmatic defaults never fire this.
+    groupCreateColorTouched = true;
+  });
   document.querySelector("#create-event-button").addEventListener("click", openCreateEventForm);
   document.querySelector("#event-all-day").addEventListener("change", syncTimingFields);
   bindRecurrenceControls();
@@ -3292,6 +3613,7 @@ const managementRequest = consumeManagementHash();
 bindControls();
 updateAdminUi();
 renderCalendar();
+renderGroupFilter();
 loadMonth();
 if (managementRequest) {
   openEditEventForm(managementRequest.eventId, managementRequest.token);

@@ -68,6 +68,16 @@
             </div>
           </div>
 
+          <div class="group-filter-row">
+            <label class="group-filter-label" for="group-filter">
+              <span>Groups</span>
+              <select id="group-filter" aria-label="Filter events by group">
+                <option value="">All groups</option>
+              </select>
+            </label>
+            <button class="quiet-button" id="manage-groups-button" type="button" hidden>Manage groups</button>
+          </div>
+
           <div class="calendar-frame" aria-busy="true">
             <div class="weekday-row" id="month-weekday-row" role="row" aria-hidden="true">
               <span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span>
@@ -273,6 +283,37 @@
           <button class="quiet-button" id="review-reject-button" type="button">Reject</button>
           <button class="primary-button" id="review-approve-button" type="button">Approve</button>
         </div>
+      </div>
+    </dialog>
+
+    <dialog id="groups-dialog" class="form-dialog" aria-labelledby="groups-title">
+      <div class="dialog-surface groups-dialog-surface">
+        <div class="dialog-header form-dialog-header">
+          <div>
+            <p class="eyebrow">Calendar administration</p>
+            <h2 id="groups-title">Manage groups</h2>
+            <p class="form-intro">Groups categorize events. Only admins can create, rename, recolor, or delete them; everyone can filter the calendar by them and assign them to submitted events.</p>
+          </div>
+          <button class="icon-close" type="button" data-close="groups-dialog" aria-label="Close group management">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" /></svg>
+          </button>
+        </div>
+        <p id="groups-error" class="form-error" role="alert"></p>
+        <div id="groups-list" class="groups-list" aria-live="polite"></div>
+        <form id="group-create-form" class="group-create-form">
+          <h3 class="event-section-heading">New group</h3>
+          <div class="field-grid">
+            <label class="field-label">Name<input id="group-create-name" maxlength="120" required /></label>
+            <label class="field-label">Slug<input id="group-create-slug" maxlength="80" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" title="Lowercase letters, numbers, and hyphens" /><small>Short address derived from the name; used when filtering the calendar.</small></label>
+          </div>
+          <div class="field-grid">
+            <label class="field-label">Color<input id="group-create-color" type="color" value="#447d68" /></label>
+            <label class="field-label">Description <span class="optional-label">optional</span><input id="group-create-description" maxlength="2000" /></label>
+          </div>
+          <div class="form-footer-actions">
+            <button class="primary-button" type="submit">Create group</button>
+          </div>
+        </form>
       </div>
     </dialog>
 
