@@ -10,6 +10,8 @@ from psycopg import Connection
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
+from .schemas import GROUP_COLOR_PALETTE
+
 
 class Database:
     """Small connection-pool wrapper with explicit transaction boundaries."""
@@ -81,11 +83,10 @@ class SQLiteDatabase:
                 connection.execute("ALTER TABLE events ADD COLUMN cancel_reason TEXT")
             _migrate_review_actions(connection, schema)
             _migrate_occurrence_overrides(connection)
-            _migrate_groups_color_and_deletion(connection, schema)
+            _migrate_groups(connection, schema)
             connection.execute(
                 """
-                CREATE UNIQUE INDEX IF NOT EXISTS
-                  groups_live_slug_unique
+                CREATE UNIQUE INDEX IF NOT EXISTS groups_live_slug_unique
                   ON groups(slug) WHERE deleted_at IS NULL
                 """
             )
@@ -193,77 +194,50 @@ def _migrate_occurrence_overrides(connection: sqlite3.Connection) -> None:
         )
 
 
-def _migrate_groups_color_and_deletion(
-    connection: sqlite3.Connection, schema: str
-) -> None:
-    """Give older local databases group colors and group deletion.
+def _migrate_groups(connection: sqlite3.Connection, schema: str) -> None:
+    """Rebuild groups for colors and deletion on older local databases.
 
-    SQLite cannot add CHECK constraints or drop the legacy UNIQUE on
-    `groups.slug` with ALTER TABLE, so a database created before group
-    colors and deletion rebuilds the table: rename, recreate from the
-    current schema, copy every row (existing groups gain distinct palette
-    colors in name order, the same palette the service assigns to new
-    groups), and drop the legacy copy. `event_revision_groups` keeps
-    referencing `groups` by name, so revision membership survives the
-    rebuild. Slug uniqueness for live groups is enforced by the partial
-    index created in `open()` after this runs.
+    Older releases declared `slug UNIQUE` inline, which SQLite cannot drop, so
+    a deleted group's slug could never be reused. Following SQLite's
+    documented table-rebuild procedure (create, copy, drop, rename — never
+    rename the referenced table away, which would repoint its foreign keys)
+    adds `color` and `deleted_at` while every revision keeps its groups.
+    Existing groups get distinct palette colors in name order.
     """
-    columns = {row[1] for row in connection.execute("PRAGMA table_info(groups)")}
-    if {"color", "deleted_at"} <= columns:
+    group_columns = {row[1] for row in connection.execute("PRAGMA table_info(groups)")}
+    if "deleted_at" in group_columns:
         return
-    from .schemas import GROUP_COLOR_PALETTE
-
-    legacy_rows = connection.execute(
-        """
-        SELECT id, slug, name, description, is_active, created_at, updated_at
-          FROM groups ORDER BY name, id
-        """
-    ).fetchall()
-    used = set()
-    colors: list[str] = []
-    for _ in legacy_rows:
-        for candidate in GROUP_COLOR_PALETTE:
-            if candidate not in used:
-                break
-        else:
-            candidate = GROUP_COLOR_PALETTE[len(used) % len(GROUP_COLOR_PALETTE)]
-        used.add(candidate)
-        colors.append(candidate)
     start = schema.index("CREATE TABLE IF NOT EXISTS groups")
     end = schema.index(";", start)
     create_table = schema[start:end].replace(
-        "CREATE TABLE IF NOT EXISTS", "CREATE TABLE", 1
+        "CREATE TABLE IF NOT EXISTS groups", "CREATE TABLE groups_rebuilt", 1
     )
     connection.executescript(
         f"""
         PRAGMA foreign_keys = OFF;
-        ALTER TABLE groups RENAME TO groups_legacy;
+        BEGIN;
         {create_table};
+        INSERT INTO groups_rebuilt (
+          id, slug, name, description, is_active, created_at, updated_at
+        ) SELECT id, slug, name, description, is_active, created_at, updated_at
+            FROM groups;
+        DROP TABLE groups;
+        ALTER TABLE groups_rebuilt RENAME TO groups;
+        COMMIT;
         PRAGMA foreign_keys = ON;
         """
     )
+    group_ids = [
+        row[0]
+        for row in connection.execute("SELECT id FROM groups ORDER BY name, id")
+    ]
     connection.executemany(
-        """
-        INSERT INTO groups (
-          id, slug, name, description, color, deleted_at,
-          is_active, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)
-        """,
+        "UPDATE groups SET color = ? WHERE id = ?",
         [
-            (
-                row[0],
-                row[1],
-                row[2],
-                row[3],
-                color,
-                row[4],
-                row[5],
-                row[6],
-            )
-            for row, color in zip(legacy_rows, colors)
+            (GROUP_COLOR_PALETTE[index % len(GROUP_COLOR_PALETTE)], group_id)
+            for index, group_id in enumerate(group_ids)
         ],
     )
-    connection.execute("DROP TABLE groups_legacy")
 
 
 def create_database(database_url: str, **kwargs: object) -> Database | SQLiteDatabase:

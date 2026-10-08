@@ -1,21 +1,21 @@
 PRAGMA foreign_keys = ON;
 
+-- A deleted group is a tombstone: revisions, subscriptions, and history
+-- keep referencing it, but it is no longer listed, assignable, or shown, and
+-- its slug may be reused (live slugs are unique via groups_live_slug_unique,
+-- created in database.py once older databases have gained deleted_at).
 CREATE TABLE IF NOT EXISTS groups (
   id TEXT PRIMARY KEY,
   slug TEXT NOT NULL,
   name TEXT NOT NULL CHECK (trim(name) <> ''),
   description TEXT NOT NULL DEFAULT '',
   color TEXT NOT NULL DEFAULT '#447d68'
-    CHECK (color GLOB '#[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'),
-  deleted_at TEXT,
+    CHECK (length(color) = 7 AND color GLOB '#[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'),
   is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+  deleted_at TEXT,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  CHECK (deleted_at IS NULL OR is_active = 0)
+  updated_at TEXT NOT NULL
 );
--- Slug uniqueness applies to live groups only (see database.py, which
--- creates the partial index after migrating older databases): deleting a
--- group frees its slug for a new group.
 
 CREATE TABLE IF NOT EXISTS events (
   id TEXT PRIMARY KEY,

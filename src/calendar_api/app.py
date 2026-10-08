@@ -10,7 +10,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dateutil.relativedelta import relativedelta
-from fastapi import Depends, FastAPI, Header, Query, Request, status
+from fastapi import Depends, FastAPI, Header, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
@@ -393,16 +393,11 @@ def create_app(
         status_code=status.HTTP_204_NO_CONTENT,
         dependencies=[admin],
     )
-    def delete_group(group_id: UUID) -> None:
-        """Delete a group (admin only).
-
-        Deletion retires the group as a tombstone: it is no longer listed,
-        assignable, or shown, while events that carried it stay visible
-        without it. Its slug becomes free for a new group.
-        """
+    def delete_group(group_id: UUID) -> Response:
+        """Delete a group. Its events stay on the calendar without it."""
         with database.transaction() as connection:
             service.delete_group(connection, group_id)
-        return None
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @app.post(
         "/api/v1/events",

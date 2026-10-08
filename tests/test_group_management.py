@@ -327,3 +327,19 @@ def test_calendar_shell_offers_group_filter_and_management(tmp_path: Path) -> No
         assert marker in page
     for marker in ("renderGroupFilter", "openGroupsDialog", '"/api/v1/admin/groups"'):
         assert marker in javascript
+
+
+def test_single_date_edit_explains_why_groups_are_locked(tmp_path: Path) -> None:
+    """Groups are series-level, so a single-date edit disables them. The form
+    must say so next to the groups and offer the series edit, rather than
+    leaving checkboxes that silently ignore clicks."""
+    with _client(tmp_path) as client:
+        page = client.get("/").text
+        javascript = client.get("/static/app.js").text
+        stylesheet = client.get("/static/styles.css").text
+
+    assert 'id="event-groups-scope-note"' in page
+    assert 'id="edit-series-groups"' in page
+    assert 'querySelector("#event-groups-scope-note").hidden = false' in javascript
+    assert 'querySelector("#edit-series-groups").addEventListener("click"' in javascript
+    assert ".group-option:has(input:disabled)" in stylesheet

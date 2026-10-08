@@ -41,8 +41,10 @@ Its semantics are:
   typos visible.
 - Only scheduled occurrences of approved, published revisions are returned.
   Events without a group are included in unfiltered reads; events assigned only
-  to inactive groups remain hidden. A pending edit leaves its last approved
-  revision visible; rejected content is never exposed.
+  to inactive groups remain hidden. Deleted groups no longer count as
+  assignments, so an event whose only groups were deleted reads as ungrouped.
+  A pending edit leaves its last approved revision visible; rejected content is
+  never exposed.
 - Responses are ordered by occurrence start. `limit` defaults to 500 (maximum
   2,000), `offset` defaults to zero, and `meta.has_more` signals another page.
 - A request can span at most 366 days and must remain in the guaranteed rolling
@@ -120,15 +122,25 @@ Public routes:
 | `DELETE` | `/api/v1/events/{event_id}/occurrences/{occurrence_id}` | Delete one date or future dates from the calendar |
 | `POST` | `/api/v1/events/{event_id}/occurrences/{occurrence_id}/restore` | Restore one date that was cancelled or deleted on its own |
 
+Every group carries a `color` (`#rrggbb`, normalized to lowercase), returned by
+the group lists and on each group embedded in calendar, event, and admin
+reads. Creating a group without a color assigns the first palette color no
+live group uses. Group management is admin-only: creating, changing, and
+deleting groups all require admin authentication, while the public
+`GET /api/v1/groups` list, calendar filtering, and assigning active groups to
+submissions stay open to anyone with calendar access. Deleting a group
+retires it (see the data model); its slug can then be reused and the deleted
+group can no longer be changed (`404`).
+
 Admin routes (require admin authentication, see below):
 
 | Method | Route | Purpose |
 | --- | --- | --- |
 | `POST` | `/api/v1/admin/login` | Username/password login, issues a session token |
 | `POST` | `/api/v1/admin/logout` | Revoke the calling session token |
-| `GET/POST` | `/api/v1/admin/groups` | List all/create groups |
+| `GET/POST` | `/api/v1/admin/groups` | List all live (active and inactive) groups/create a group |
 | `PATCH` | `/api/v1/admin/groups/{group_id}` | Rename, describe, recolor, activate/deactivate |
-| `DELETE` | `/api/v1/admin/groups/{group_id}` | Delete a group; its events stay visible without it |
+| `DELETE` | `/api/v1/admin/groups/{group_id}` | Delete a group (`204`); its events stay visible without it |
 | `GET` | `/api/v1/admin/events?status=pending` | Moderation queue |
 | `GET` | `/api/v1/admin/events/{event_id}` | Audit view with all revisions |
 | `POST` | `/api/v1/admin/events` | Create and immediately approve an event |

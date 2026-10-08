@@ -17,6 +17,7 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/003_optional_event_cont
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/004_event_cancellation.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/005_occurrence_overrides.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/006_occurrence_exceptions.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/007_group_management.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/tests/001_initial_schema_smoke.sql
 ```
 
@@ -86,6 +87,18 @@ review) and can edit, review a pending edit, or unpublish. The event's creator
 or an admin can cancel the event (it stays visible, marked cancelled) or
 delete it (it no longer exists). The open event lives in the URL
 (`?event=…&occurrence=…`), so the link opens straight to that event and date.
+
+Groups categorize events, and each group has a color that its events,
+pills, and filter chips use. Anyone can narrow the calendar with the
+**Groups** chips above the grid (selecting several shows events in any of
+them; the selection lives in the URL as `?group=arts&group=music`) and tag
+their submissions with active groups. Only signed-in admins see **Groups** in
+the header, where they create groups (name, link name, color, description),
+rename, recolor, deactivate, or delete them; the server enforces this on
+every group-management route. Deactivating a group hides it along with events
+tagged only with it, until it is reactivated. Deleting a group removes it from
+every event, filter, and form for good, but its events stay on the calendar,
+and its link name can be reused.
 
 When link access is enabled, open the UI with the private token in the URL:
 

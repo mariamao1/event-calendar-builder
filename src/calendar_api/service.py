@@ -52,12 +52,15 @@ def _execute_many(connection: Connection, query: str, params: Iterable[Any]) -> 
         cursor.executemany(query, params)
 
 
+_GROUP_FIELDS = "id, slug, name, description, color, is_active, created_at, updated_at"
+
+
 def list_groups(
     connection: Connection, *, include_inactive: bool = False
 ) -> list[dict]:
     rows = connection.execute(
-        """
-        SELECT id, slug, name, description, color, is_active, created_at, updated_at
+        f"""
+        SELECT {_GROUP_FIELDS}
           FROM groups
          WHERE deleted_at IS NULL AND (is_active OR %(include_inactive)s)
          ORDER BY name, id
@@ -68,17 +71,18 @@ def list_groups(
 
 
 def create_group(connection: Connection, payload: GroupCreate) -> dict:
-    used = connection.execute(
-        "SELECT color FROM groups WHERE deleted_at IS NULL"
-    ).fetchall()
-    color = payload.color or next_group_color([row["color"] for row in used])
+    color = payload.color or next_group_color([
+        row["color"]
+        for row in connection.execute(
+            "SELECT color FROM groups WHERE deleted_at IS NULL"
+        ).fetchall()
+    ])
     try:
         row = connection.execute(
-            """
+            f"""
             INSERT INTO groups (slug, name, description, color)
             VALUES (%s, %s, %s, %s)
-            RETURNING id, slug, name, description, color,
-                      is_active, created_at, updated_at
+            RETURNING {_GROUP_FIELDS}
             """,
             (payload.slug, payload.name, payload.description, color),
         ).fetchone()
@@ -94,8 +98,7 @@ def update_group(connection: Connection, group_id: UUID, payload: GroupUpdate) -
         f"""
         UPDATE groups SET {assignments}
          WHERE id = %(group_id)s AND deleted_at IS NULL
-        RETURNING id, slug, name, description, color,
-                  is_active, created_at, updated_at
+        RETURNING {_GROUP_FIELDS}
         """,
         {**changes, "group_id": group_id},
     ).fetchone()
@@ -105,17 +108,17 @@ def update_group(connection: Connection, group_id: UUID, payload: GroupUpdate) -
 
 
 def delete_group(connection: Connection, group_id: UUID) -> None:
-    """Retire a group as a tombstone while keeping its events visible.
+    """Delete a group, leaving a tombstone for history to reference.
 
-    The group's assignments stay on their revisions but every read ignores
-    deleted groups, so events that carried it stay on the calendar without
-    it. Deleting also deactivates the group and frees its slug for reuse
-    (slug uniqueness applies to live groups only).
+    Reviewed revisions, subscriptions, and notification history keep their
+    group rows (they are immutable or RESTRICT-protected), so the group is
+    retired rather than removed. Its events stay on the calendar: they simply
+    no longer carry the group, and an event whose only groups are deleted
+    reads as ungrouped. The slug becomes free for a new group.
     """
     row = connection.execute(
         """
-        UPDATE groups
-           SET deleted_at = now(), is_active = false
+        UPDATE groups SET deleted_at = now(), is_active = false
          WHERE id = %s AND deleted_at IS NULL
         RETURNING id
         """,
@@ -129,8 +132,7 @@ def _require_active_groups(connection: Connection, group_ids: list[UUID]) -> Non
     if not group_ids:
         return
     rows = connection.execute(
-        "SELECT id FROM groups WHERE id = ANY(%s) AND is_active "
-        "AND deleted_at IS NULL",
+        "SELECT id FROM groups WHERE id = ANY(%s) AND is_active AND deleted_at IS NULL",
         (group_ids,),
     ).fetchall()
     if len(rows) != len(group_ids):
@@ -269,10 +271,7 @@ def get_editable_event(connection: Connection, event_id: UUID) -> dict:
                r.recurrence_rule, r.submitted_by_name, r.submitted_by_channel,
                r.submitted_by_contact, r.submitted_at,
                (SELECT COALESCE(jsonb_agg(
-                         jsonb_build_object(
-                           'id', g.id, 'slug', g.slug, 'name', g.name,
-                           'color', g.color
-                         )
+                         jsonb_build_object('id', g.id, 'slug', g.slug, 'name', g.name, 'color', g.color)
                          ORDER BY g.name, g.id
                        ), '[]'::jsonb)
                   FROM event_revision_groups rg
@@ -1097,8 +1096,7 @@ def calendar_occurrences(
 ) -> tuple[list[dict], bool]:
     if group_slugs:
         found = connection.execute(
-            "SELECT slug FROM groups WHERE slug = ANY(%s) AND is_active "
-            "AND deleted_at IS NULL",
+            "SELECT slug FROM groups WHERE slug = ANY(%s) AND is_active",
             (group_slugs,),
         ).fetchall()
         found_slugs = {row["slug"] for row in found}
@@ -1123,26 +1121,21 @@ def calendar_occurrences(
         JOIN event_revisions r ON r.id = e.published_revision_id
         CROSS JOIN LATERAL (
           SELECT COALESCE(jsonb_agg(
-                   jsonb_build_object(
-                     'id', g.id, 'slug', g.slug, 'name', g.name,
-                     'color', g.color
-                   )
+                   jsonb_build_object('id', g.id, 'slug', g.slug, 'name', g.name, 'color', g.color)
                    ORDER BY g.name, g.id
                  ), '[]'::jsonb) AS groups
             FROM event_revision_groups rg
             JOIN groups g ON g.id = rg.group_id
            WHERE rg.event_revision_id = r.id
              AND g.is_active
-             AND g.deleted_at IS NULL
         ) grouped
         WHERE e.archived_at IS NULL
           AND r.approval_status = 'approved'
           AND o.status = 'scheduled'
           AND (
             NOT EXISTS (
-              SELECT 1
-                FROM event_revision_groups assigned_rg
-                JOIN groups assigned_g ON assigned_g.id = assigned_rg.group_id
+              SELECT 1 FROM event_revision_groups assigned_rg
+              JOIN groups assigned_g ON assigned_g.id = assigned_rg.group_id
                WHERE assigned_rg.event_revision_id = r.id
                  AND assigned_g.deleted_at IS NULL
             )
@@ -1152,7 +1145,6 @@ def calendar_occurrences(
                 JOIN groups visible_g ON visible_g.id = visible_rg.group_id
                WHERE visible_rg.event_revision_id = r.id
                  AND visible_g.is_active
-                 AND visible_g.deleted_at IS NULL
             )
           )
           AND (
@@ -1171,7 +1163,6 @@ def calendar_occurrences(
                WHERE filter_rg.event_revision_id = r.id
                  AND filter_g.slug = ANY(%(group_slugs)s)
                  AND filter_g.is_active
-                 AND filter_g.deleted_at IS NULL
             )
           )
         ORDER BY
@@ -1333,25 +1324,20 @@ def get_published_event(
                e.cancelled_at AS cancelled_at,
                e.cancel_reason AS cancel_reason,
                (SELECT COALESCE(jsonb_agg(
-                         jsonb_build_object(
-                           'id', g.id, 'slug', g.slug, 'name', g.name,
-                           'color', g.color
-                         )
+                         jsonb_build_object('id', g.id, 'slug', g.slug, 'name', g.name, 'color', g.color)
                          ORDER BY g.name, g.id
                        ), '[]'::jsonb)
                   FROM event_revision_groups rg
                   JOIN groups g ON g.id = rg.group_id
                  WHERE rg.event_revision_id = p.event_revision_id
-                   AND g.is_active
-                   AND g.deleted_at IS NULL) AS groups
+                   AND g.is_active) AS groups
           FROM published_events p
           JOIN events e ON e.id = p.event_id
          WHERE p.event_id = %s
            AND (
              NOT EXISTS (
-               SELECT 1
-                 FROM event_revision_groups assigned_rg
-                 JOIN groups assigned_g ON assigned_g.id = assigned_rg.group_id
+               SELECT 1 FROM event_revision_groups assigned_rg
+               JOIN groups assigned_g ON assigned_g.id = assigned_rg.group_id
                 WHERE assigned_rg.event_revision_id = p.event_revision_id
                   AND assigned_g.deleted_at IS NULL
              )
@@ -1361,7 +1347,6 @@ def get_published_event(
                  JOIN groups visible_g ON visible_g.id = visible_rg.group_id
                 WHERE visible_rg.event_revision_id = p.event_revision_id
                   AND visible_g.is_active
-                  AND visible_g.deleted_at IS NULL
              )
            )
         """,
@@ -1432,10 +1417,7 @@ def review_queue(
                r.submitted_by_contact, r.submitted_at, r.reviewed_at,
                r.reviewed_by, r.review_note,
                (SELECT COALESCE(jsonb_agg(
-                         jsonb_build_object(
-                           'id', g.id, 'slug', g.slug, 'name', g.name,
-                           'color', g.color
-                         )
+                         jsonb_build_object('id', g.id, 'slug', g.slug, 'name', g.name, 'color', g.color)
                          ORDER BY g.name, g.id
                        ), '[]'::jsonb)
                   FROM event_revision_groups rg
@@ -1479,10 +1461,7 @@ def get_admin_event(connection: Connection, event_id: UUID) -> dict:
         """
         SELECT r.*,
                (SELECT COALESCE(jsonb_agg(
-                         jsonb_build_object(
-                           'id', g.id, 'slug', g.slug, 'name', g.name,
-                           'color', g.color
-                         )
+                         jsonb_build_object('id', g.id, 'slug', g.slug, 'name', g.name, 'color', g.color)
                          ORDER BY g.name, g.id
                        ), '[]'::jsonb)
                   FROM event_revision_groups rg
@@ -1596,8 +1575,8 @@ def _require_recurring(revision: dict, dates: list[dict]) -> None:
 
 
 def _published_group_ids(connection: Connection, revision_id: UUID) -> set[UUID]:
-    # Deleted groups are tombstones: the form no longer offers them, so a
-    # scoped edit that omits them must not read as a group change.
+    # Deleted groups are gone from the event: they are neither compared
+    # against an edit's groups nor carried into revisions minted from it.
     rows = connection.execute(
         """
         SELECT rg.group_id FROM event_revision_groups rg

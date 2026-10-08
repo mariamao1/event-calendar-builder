@@ -49,12 +49,6 @@ def _local_timestamp(value: datetime) -> str:
     return value.replace(tzinfo=None, microsecond=0).isoformat()
 
 
-def _live_groups_clause() -> str:
-    # Deleted groups are tombstones: never listed, assigned, or shown. Their
-    # events stay visible without them, and their slugs are free for reuse.
-    return "g.deleted_at IS NULL"
-
-
 def _groups_for_revision(
     connection: sqlite3.Connection, revision_id: str, *, active_only: bool
 ) -> list[dict]:
@@ -64,7 +58,7 @@ def _groups_for_revision(
         SELECT g.id, g.slug, g.name, g.color
           FROM event_revision_groups rg
           JOIN groups g ON g.id = rg.group_id
-         WHERE rg.event_revision_id = ? AND {_live_groups_clause()} {suffix}
+         WHERE rg.event_revision_id = ? AND g.deleted_at IS NULL {suffix}
          ORDER BY g.name, g.id
         """,
         (revision_id,),
@@ -72,12 +66,25 @@ def _groups_for_revision(
     return [dict(item) for item in rows]
 
 
+_GROUP_FIELDS = "id, slug, name, description, color, is_active, created_at, updated_at"
+
+
+def _group(connection: sqlite3.Connection, group_id: str) -> dict:
+    result = dict(
+        connection.execute(
+            f"SELECT {_GROUP_FIELDS} FROM groups WHERE id = ?", (group_id,)
+        ).fetchone()
+    )
+    result["is_active"] = bool(result["is_active"])
+    return result
+
+
 def list_groups(
     connection: sqlite3.Connection, *, include_inactive: bool = False
 ) -> list[dict]:
     rows = connection.execute(
-        """
-        SELECT id, slug, name, description, color, is_active, created_at, updated_at
+        f"""
+        SELECT {_GROUP_FIELDS}
           FROM groups
          WHERE deleted_at IS NULL AND (is_active = 1 OR ?)
          ORDER BY name, id
@@ -87,17 +94,15 @@ def list_groups(
     return [{**dict(item), "is_active": bool(item["is_active"])} for item in rows]
 
 
-def _next_live_group_color(connection: sqlite3.Connection) -> str:
-    rows = connection.execute(
-        "SELECT color FROM groups WHERE deleted_at IS NULL"
-    ).fetchall()
-    return next_group_color([item["color"] for item in rows])
-
-
 def create_group(connection: sqlite3.Connection, payload: GroupCreate) -> dict:
     group_id = str(uuid4())
     now = _timestamp()
-    color = payload.color or _next_live_group_color(connection)
+    color = payload.color or next_group_color([
+        row["color"]
+        for row in connection.execute(
+            "SELECT color FROM groups WHERE deleted_at IS NULL"
+        ).fetchall()
+    ])
     try:
         connection.execute(
             """
@@ -105,23 +110,11 @@ def create_group(connection: sqlite3.Connection, payload: GroupCreate) -> dict:
               (id, slug, name, description, color, is_active, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, 1, ?, ?)
             """,
-            (
-                group_id,
-                payload.slug,
-                payload.name,
-                payload.description,
-                color,
-                now,
-                now,
-            ),
+            (group_id, payload.slug, payload.name, payload.description, color, now, now),
         )
     except sqlite3.IntegrityError as exc:
         raise ConflictError(f"group slug '{payload.slug}' already exists") from exc
-    result = dict(
-        connection.execute("SELECT * FROM groups WHERE id = ?", (group_id,)).fetchone()
-    )
-    result["is_active"] = bool(result["is_active"])
-    return result
+    return _group(connection, group_id)
 
 
 def update_group(
@@ -138,29 +131,23 @@ def update_group(
     )
     if cursor.rowcount == 0:
         raise NotFoundError("group not found")
-    result = dict(
-        connection.execute(
-            "SELECT * FROM groups WHERE id = ?", (str(group_id),)
-        ).fetchone()
-    )
-    result["is_active"] = bool(result["is_active"])
-    return result
+    return _group(connection, str(group_id))
 
 
 def delete_group(connection: sqlite3.Connection, group_id: UUID) -> None:
-    """Retire a group as a tombstone while keeping its events visible.
+    """Delete a group, leaving a tombstone for history to reference.
 
-    The group's assignments stay on their revisions (history keeps
-    referencing them) but every read ignores deleted groups, so events that
-    carried it stay on the calendar without it. Deleting also deactivates
-    the group and frees its slug for a new group.
+    Its events stay on the calendar: they simply no longer carry the group,
+    and an event whose only groups are deleted reads as ungrouped. The slug
+    becomes free for a new group.
     """
+    now = _timestamp()
     cursor = connection.execute(
         """
         UPDATE groups SET deleted_at = ?, is_active = 0, updated_at = ?
          WHERE id = ? AND deleted_at IS NULL
         """,
-        (_timestamp(), _timestamp(), str(group_id)),
+        (now, now, str(group_id)),
     )
     if cursor.rowcount == 0:
         raise NotFoundError("group not found")
@@ -173,8 +160,8 @@ def _require_active_groups(
         return
     placeholders = ",".join("?" for _ in group_ids)
     count = connection.execute(
-        f"SELECT count(*) FROM groups WHERE id IN ({placeholders}) "
-        "AND is_active = 1 AND deleted_at IS NULL",
+        f"SELECT count(*) FROM groups WHERE id IN ({placeholders}) AND is_active = 1"
+        " AND deleted_at IS NULL",
         tuple(map(str, group_ids)),
     ).fetchone()[0]
     if count != len(group_ids):
@@ -1235,8 +1222,7 @@ def calendar_occurrences(
     if group_slugs:
         placeholders = ",".join("?" for _ in group_slugs)
         found = connection.execute(
-            f"SELECT slug FROM groups WHERE slug IN ({placeholders}) "
-            "AND is_active = 1 AND deleted_at IS NULL",
+            f"SELECT slug FROM groups WHERE slug IN ({placeholders}) AND is_active = 1",
             tuple(group_slugs),
         ).fetchall()
         missing = sorted(set(group_slugs) - {item["slug"] for item in found})
@@ -1260,7 +1246,6 @@ def calendar_occurrences(
             JOIN groups filter_g ON filter_g.id = filter_rg.group_id
             WHERE filter_rg.event_revision_id = r.id
               AND filter_g.slug IN ({placeholders}) AND filter_g.is_active = 1
-              AND filter_g.deleted_at IS NULL
           )
         """
         params.extend(group_slugs)
@@ -1290,7 +1275,6 @@ def calendar_occurrences(
                SELECT 1 FROM event_revision_groups visible_rg
                JOIN groups visible_g ON visible_g.id = visible_rg.group_id
                WHERE visible_rg.event_revision_id = r.id AND visible_g.is_active = 1
-                 AND visible_g.deleted_at IS NULL
              )
            )
            AND ((o.is_all_day = 0 AND o.starts_at < ? AND o.ends_at > ?)
@@ -1472,7 +1456,6 @@ def get_published_event(
                SELECT 1 FROM event_revision_groups rg
                JOIN groups g ON g.id = rg.group_id
                WHERE rg.event_revision_id = r.id AND g.is_active = 1
-                 AND g.deleted_at IS NULL
              )
            )
         """,
@@ -1686,8 +1669,8 @@ def _require_recurring(revision: dict, dates: list[dict]) -> None:
 
 
 def _published_group_ids(connection: sqlite3.Connection, revision_id: str) -> set[str]:
-    # Deleted groups are tombstones: the form no longer offers them, so a
-    # scoped edit that omits them must not read as a group change.
+    # Deleted groups are gone from the event: they are neither compared
+    # against an edit's groups nor carried into revisions minted from it.
     rows = connection.execute(
         """
         SELECT rg.group_id FROM event_revision_groups rg
