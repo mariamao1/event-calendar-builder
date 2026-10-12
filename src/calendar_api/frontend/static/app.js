@@ -203,6 +203,36 @@ function groupColor(event) {
   return PALETTE[Math.abs(hash) % PALETTE.length];
 }
 
+// Every group an event is tagged with, in the server's order, once each.
+function eventTagGroups(event) {
+  const seen = new Set();
+  return (event.groups || []).filter((group) => {
+    if (!group?.name || seen.has(group.id)) return false;
+    seen.add(group.id);
+    return true;
+  });
+}
+
+// One colored circle per group on a calendar item. The item's own color only
+// reflects its first group, so the circles are what show the rest. Each is
+// named for hover and, where the item has no label of its own, screen readers.
+function appendGroupTags(element, event) {
+  const groups = eventTagGroups(event);
+  if (!groups.length) return;
+  const list = document.createElement("span");
+  list.className = "event-tags";
+  for (const group of groups) {
+    const tag = document.createElement("span");
+    tag.className = "event-tag";
+    tag.setAttribute("role", "img");
+    tag.setAttribute("aria-label", group.name);
+    tag.title = group.name;
+    if (isHexColor(group.color)) tag.style.setProperty("--tag-color", group.color);
+    list.append(tag);
+  }
+  element.append(list);
+}
+
 function layoutBands(events, week) {
   const weekStart = dateKey(week[0]);
   const weekEnd = dateKey(week[6]);
@@ -450,29 +480,27 @@ function renderBand(segment) {
   title.textContent = event.title;
   button.append(title);
   appendRepeatIcon(button, event);
+  appendGroupTags(button, event);
   button.addEventListener("click", () => openEventDialog(event));
   return button;
 }
 
 function renderTimedEvent(event) {
-  const color = groupColor(event);
   const button = document.createElement("button");
   button.type = "button";
   button.className = ["timed-event", cancelledClass(event)].filter(Boolean).join(" ");
   button.setAttribute("aria-label", eventAriaLabel(event));
-  button.style.setProperty("--event-color", color.solid);
+  button.title = eventAriaLabel(event);
 
-  const dot = document.createElement("span");
-  dot.className = "event-dot";
-  dot.setAttribute("aria-hidden", "true");
   const time = document.createElement("span");
   time.className = "event-time";
   time.textContent = formatTime(event.starts_at);
   const title = document.createElement("span");
   title.className = "timed-title";
   title.textContent = event.title;
-  button.append(dot, time, title);
+  button.append(time, title);
   appendRepeatIcon(button, event);
+  appendGroupTags(button, event);
   button.addEventListener("click", () => openEventDialog(event));
   return button;
 }
@@ -615,16 +643,22 @@ function renderTimeBlock(segment, rangeStartMin, rangeMinutes) {
   button.setAttribute("aria-label", eventAriaLabel(event));
   button.title = eventAriaLabel(event);
 
+  // Group circles share the first line with the time, which even the
+  // shortest block shows, rather than a line of their own that it would clip.
+  const head = document.createElement("span");
+  head.className = "time-block-head";
   const time = document.createElement("span");
   time.className = "time-block-time";
   time.textContent = event.is_all_day
     ? "All day"
     : `${formatTime(event.starts_at)}–${formatTime(event.ends_at)}`;
+  head.append(time);
+  appendGroupTags(head, event);
   const title = document.createElement("span");
   title.className = "time-block-title";
   title.textContent =
     (segment.continuesBefore ? "↩ " : "") + event.title + (segment.continuesAfter ? " ↪" : "");
-  button.append(time, title);
+  button.append(head, title);
   appendRepeatIcon(title, event);
   button.addEventListener("click", () => openEventDialog(event));
   return button;
@@ -662,8 +696,9 @@ function renderTimeView(days, allDayContainer, gridContainer) {
       title.textContent = event.title;
       button.append(title);
       appendRepeatIcon(button, event);
+      appendGroupTags(button, event);
       button.title = eventAriaLabel(event);
-      button.setAttribute("aria-label", `${eventAriaLabel(event)} on ${formatDate(day, { month: "long", day: "numeric" })}`);
+      button.setAttribute("aria-label", eventAriaLabel(event, formatDate(day, { month: "long", day: "numeric" })));
       button.addEventListener("click", () => openEventDialog(event));
       cell.append(button);
     }
@@ -964,10 +999,15 @@ function renderGroupFilter() {
   container.replaceChildren(label, all, ...chips);
 }
 
-function eventAriaLabel(event) {
+// Calendar items are labelled buttons, so their group tags are only heard
+// (and seen in full on hover, when narrow items clip them) through this label.
+function eventAriaLabel(event, dayText = null) {
   const timing = event.is_all_day ? "All day" : formatTime(event.starts_at);
+  const day = dayText ? ` on ${dayText}` : "";
   const repeats = event.recurrence_rule ? " (repeats)" : "";
-  return `${timing}: ${event.title}${repeats}${event.is_cancelled ? " (cancelled)" : ""}`;
+  const groups = eventTagGroups(event).map((group) => group.name);
+  const tags = groups.length ? ` · ${groups.length === 1 ? "Group" : "Groups"}: ${groups.join(", ")}` : "";
+  return `${timing}${day}: ${event.title}${repeats}${event.is_cancelled ? " (cancelled)" : ""}${tags}`;
 }
 
 // Small cue on calendar items that belong to a repeating series. Items with
@@ -1023,6 +1063,7 @@ function openDayDialog(key) {
     const location = event.location_name ? ` · ${event.location_name}` : "";
     meta.textContent = `${event.is_cancelled ? "Cancelled · " : ""}${dayEventMeta(event, key)}${location}`;
     copy.append(title, meta);
+    appendGroupTags(copy, event);
     const arrow = document.createElement("span");
     arrow.className = "card-arrow";
     arrow.setAttribute("aria-hidden", "true");

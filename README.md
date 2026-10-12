@@ -89,7 +89,13 @@ delete it (it no longer exists). The open event lives in the URL
 (`?event=…&occurrence=…`), so the link opens straight to that event and date.
 
 Groups categorize events, and each group has a color that its events,
-pills, and filter chips use. Anyone can narrow the calendar with the
+pills, and filter chips use. An event can be tagged with several groups: it
+takes its first group's color, and every calendar view (month, week, day, and
+a day's full list) shows one small circle in each group's color on the
+event, so the other groups are visible too. Where an event is too narrow for
+all its circles, the title shortens first, and any circle that still doesn't
+fit is left off whole rather than cut in half. Hovering an event or a circle
+(or a screen reader) gives the group names. Anyone can narrow the calendar with the
 **Groups** chips above the grid (selecting several shows events in any of
 them; the selection lives in the URL as `?group=arts&group=music`) and tag
 their submissions with active groups. Only signed-in admins see **Groups** in

@@ -405,7 +405,7 @@ main {
 }
 
 .band-time {
-  flex: 0 0 auto;
+  flex: none;
   opacity: 0.72;
   font-size: 0.6rem;
   font-weight: 800;
@@ -414,6 +414,7 @@ main {
 }
 
 .band-title {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -426,8 +427,7 @@ main {
 }
 
 .timed-event {
-  display: grid;
-  grid-template-columns: 7px auto minmax(0, 1fr);
+  display: flex;
   gap: 5px;
   align-items: center;
   width: 100%;
@@ -446,14 +446,8 @@ main {
   background: #f1eee6;
 }
 
-.event-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--event-color, var(--coral));
-}
-
 .event-time {
+  flex: none;
   color: var(--muted);
   font-size: 0.61rem;
   font-weight: 700;
@@ -461,6 +455,7 @@ main {
 }
 
 .timed-title {
+  min-width: 0;
   overflow: hidden;
   font-weight: 600;
   text-overflow: ellipsis;
@@ -547,13 +542,6 @@ main {
   height: 7px;
   border-radius: 3px;
   background: #83aa9c;
-}
-
-.legend-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--coral);
 }
 
 #status-region {
@@ -930,10 +918,6 @@ dialog::backdrop {
     align-items: flex-start;
     min-height: 54px;
     padding: 11px 18px;
-  }
-
-  .legend span:last-child {
-    display: none;
   }
 }
 
@@ -1699,7 +1683,8 @@ dialog::backdrop {
 }
 
 .allday-chip {
-  display: block;
+  display: flex;
+  align-items: center;
   width: 100%;
   padding: 5px 9px;
   overflow: hidden;
@@ -1848,7 +1833,16 @@ dialog::backdrop {
   border-bottom-right-radius: 0;
 }
 
+.time-block-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  min-width: 0;
+}
+
 .time-block-time {
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   color: var(--muted);
   font-size: 0.6rem;
@@ -2075,7 +2069,7 @@ dialog::backdrop {
 .band.is-cancelled .band-title,
 .timed-event.is-cancelled .timed-title,
 .time-block.is-cancelled .time-block-title,
-.allday-chip.is-cancelled,
+.allday-chip.is-cancelled .allday-chip-title,
 .day-event-card.is-cancelled .day-card-title {
   text-decoration: line-through;
 }
@@ -2268,18 +2262,67 @@ dialog::backdrop {
   opacity: 0.7;
 }
 
-.timed-event:has(> .repeat-icon) {
-  grid-template-columns: 7px auto minmax(0, 1fr) auto;
-}
-
-.allday-chip:has(> .repeat-icon) {
-  display: flex;
-  align-items: center;
-}
-
 .allday-chip-title {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Group tags on calendar items: one colored circle per group, at the end of
+   the item's line. Circles come first: they keep their full width while the
+   title shrinks, leaving just enough room for it (and any time) to start. If even
+   that isn't enough, circles that don't fit wrap onto a hidden second row, so
+   a circle is shown whole or not at all (never sliced) and the first always
+   shows. Hover and the item's label still name every group. */
+.event-tags {
+  --tag-size: 8px;
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  gap: 0 3px;
+  min-width: calc(var(--tag-size) + 4px);
+  max-width: calc(100% - 3.5em);
+  height: var(--tag-size);
+  margin-left: auto;
+  padding-left: 4px;
+  overflow: hidden;
+}
+
+.event-tag {
+  display: block;
+  flex: none;
+  width: var(--tag-size);
+  height: var(--tag-size);
+  border-radius: 50%;
+  background: var(--tag-color, var(--forest));
+  /* Keeps light colors visible on pale items. */
+  box-shadow: inset 0 0 0 1px rgba(23, 37, 32, 0.15);
+}
+
+/* Month items keep their start time whole, so leave room for it too. */
+.band .event-tags,
+.timed-event .event-tags {
+  max-width: calc(100% - 7em);
+}
+
+/* In week/day blocks the time is the only thing sharing their row. Blocks
+   for overlapping events can be slivers narrower than a circle, so there
+   the first circle isn't guaranteed either: none shows rather than half. */
+.time-block-head .event-tags {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* A day's full list has room to wrap every circle onto more lines. */
+.day-card-copy .event-tags {
+  --tag-size: 10px;
+  gap: 4px;
+  min-width: 0;
+  max-width: none;
+  height: auto;
+  margin-top: 6px;
+  margin-left: 0;
+  padding-left: 0;
 }
 
 /* Scope choice for edits/removals of a repeating event: one date, that date
