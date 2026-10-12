@@ -159,6 +159,19 @@ def test_robots_header_marks_everything_noindex(database_url: str) -> None:
             ), path
 
 
+def test_browser_client_revalidates_page_and_assets(database_url: str) -> None:
+    with _client(database_url, calendar_access_token=LINK_TOKEN) as client:
+        for path in ("/?token=" + LINK_TOKEN, "/static/app.js", "/static/styles.css"):
+            response = client.get(path)
+            assert response.status_code == 200, path
+            assert response.headers.get("Cache-Control") == "no-cache", path
+        asset = client.get("/static/app.js")
+        revalidated = client.get(
+            "/static/app.js", headers={"If-None-Match": asset.headers["etag"]}
+        )
+        assert revalidated.status_code == 304
+
+
 # --- Admin authentication ---------------------------------------------------
 
 

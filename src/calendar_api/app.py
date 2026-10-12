@@ -139,6 +139,10 @@ def create_app(
         # The calendar is private to its link: keep every response,
         # including errors, out of search engine indexes.
         response.headers["X-Robots-Tag"] = "noindex, nofollow"
+        # The browser client must revalidate its page and assets (a cheap 304
+        # via ETag) so it never keeps running a stale app.js after an update.
+        if request.url.path == "/" or request.url.path.startswith("/static/"):
+            response.headers.setdefault("Cache-Control", "no-cache")
         return response
 
     @app.exception_handler(ApiError)

@@ -137,6 +137,28 @@ def test_groups_carry_a_color_identifier(tmp_path: Path) -> None:
         assert [group["color"] for group in detail["groups"]] == ["#0f0f0f", "#a1b2c3"]
 
 
+def test_filtering_by_several_groups_matches_any_of_them(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        arts = _group(client, "arts")
+        music = _group(client, "music")
+        sports = _group(client, "sports")
+        only_arts = _publish(client, _payload([arts["id"]], "Sketch night"))
+        only_music = _publish(client, _payload([music["id"]], "Choir"))
+        both = _publish(client, _payload([arts["id"], music["id"]], "Song and paint"))
+        _publish(client, _payload([sports["id"]], "Pickup soccer"))
+        _publish(client, _payload([], "Ungrouped meetup"))
+
+        assert len(_calendar(client)) == 5
+
+        # Selecting several groups shows events in any of them, each once,
+        # and leaves out other groups' events and ungrouped events.
+        ids = [item["event_id"] for item in _calendar(client, "&group=arts&group=music")]
+        assert sorted(ids) == sorted([only_arts, only_music, both])
+        assert sorted(
+            item["event_id"] for item in _calendar(client, "&group=music&group=arts")
+        ) == sorted(ids)
+
+
 def test_deleting_a_group_keeps_its_events_visible(tmp_path: Path) -> None:
     with _client(tmp_path) as client:
         arts = _group(client, "arts")

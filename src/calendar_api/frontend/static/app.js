@@ -863,13 +863,30 @@ function accessToken() {
   return params.get("token") || params.get("access_token");
 }
 
-async function loadMonth() {
+// Refreshes that keep the same dates on screen (such as a filter change)
+// show the loading overlay only once the request is this slow, so a fast
+// response swaps events in place instead of flashing the overlay.
+const QUIET_REFRESH_OVERLAY_DELAY_MS = 400;
+let quietRefreshTimer = null;
+
+function endQuietRefresh() {
+  clearTimeout(quietRefreshTimer);
+  quietRefreshTimer = null;
+  calendarFrame.classList.remove("refreshing");
+}
+
+async function loadMonth({ quiet = false } = {}) {
   // The view and cursor date are reflected in the URL on every navigation,
   // so a refresh or a shared link restores exactly what was visible.
   writeUrlState();
   if (state.request) state.request.abort();
   const controller = new AbortController();
   state.request = controller;
+  endQuietRefresh();
+  if (quiet) {
+    calendarFrame.classList.add("refreshing");
+    quietRefreshTimer = setTimeout(endQuietRefresh, QUIET_REFRESH_OVERLAY_DELAY_MS);
+  }
   const { start, end } = visibleFetchRange();
   const params = new URLSearchParams({
     start,
@@ -882,7 +899,8 @@ async function loadMonth() {
   for (const slug of state.groupFilter) params.append("group", slug);
 
   calendarFrame.setAttribute("aria-busy", "true");
-  statusRegion.textContent = "";
+  // A quiet refresh keeps the old count until the new one arrives.
+  if (!quiet) statusRegion.textContent = "";
   try {
     const allEvents = [];
     let offset = 0;
@@ -913,6 +931,7 @@ async function loadMonth() {
   } finally {
     if (state.request === controller) {
       state.request = null;
+      endQuietRefresh();
       calendarFrame.setAttribute("aria-busy", "false");
     }
   }
@@ -952,8 +971,15 @@ function groupFilterSummary() {
 
 function setGroupFilter(slugs) {
   state.groupFilter = slugs;
-  renderGroupFilter();
-  loadMonth();
+  // Update the chips in place rather than rebuilding them, so the clicked
+  // chip keeps keyboard focus.
+  const selected = new Set(slugs);
+  for (const chip of document.querySelectorAll("#group-filter .group-chip")) {
+    const { slug } = chip.dataset;
+    const pressed = slug === undefined ? selected.size === 0 : selected.has(slug);
+    chip.setAttribute("aria-pressed", String(pressed));
+  }
+  loadMonth({ quiet: true });
 }
 
 function renderGroupFilter() {
@@ -973,6 +999,7 @@ function renderGroupFilter() {
     const chip = document.createElement("button");
     chip.type = "button";
     chip.className = "group-chip";
+    chip.dataset.slug = group.slug;
     chip.setAttribute("aria-pressed", String(selected.has(group.slug)));
     if (group.description) chip.title = group.description;
     if (isHexColor(group.color)) {

@@ -495,7 +495,7 @@ main {
   backdrop-filter: blur(2px);
 }
 
-.calendar-frame[aria-busy="true"] .loading-state {
+.calendar-frame[aria-busy="true"]:not(.refreshing) .loading-state {
   display: grid;
 }
 
