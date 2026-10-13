@@ -549,6 +549,11 @@ main {
   text-align: right;
 }
 
+.calendar-timezone {
+  margin: 0;
+  text-align: center;
+}
+
 dialog {
   width: min(94vw, 520px);
   max-height: min(88vh, 760px);

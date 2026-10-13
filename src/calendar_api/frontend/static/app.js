@@ -44,7 +44,32 @@ const monthJump = document.querySelector("#month-jump");
 const dayDialog = document.querySelector("#day-dialog");
 const eventDialog = document.querySelector("#event-dialog");
 
-const now = new Date();
+// The viewer's own IANA timezone. Calendar ranges are requested in this
+// timezone, and grid times are shown in it. Event details additionally show
+// the submitted event timezone via eventTimezoneRows.
+const viewerTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+
+// Today's calendar date in the viewer's timezone, read from the clock when
+// needed so "Today" never goes stale after page load.
+function todayDate() {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: viewerTimezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const pick = (type) => parts.find((part) => part.type === type).value;
+  return new Date(Date.UTC(Number(pick("year")), Number(pick("month")) - 1, Number(pick("day"))));
+}
+
+// Navigate the calendar to the given viewer-local date key (or Date) and
+// reload events there.
+function showCalendarDate(key) {
+  const date = typeof key === "string" ? dateFromKey(key) : key;
+  state.anchorDate = date;
+  state.displayedMonth = utcDate(date.getUTCFullYear(), date.getUTCMonth(), 1);
+  loadMonth();
+}
 
 // View persistence through the link URL: the selected view and cursor date
 // live in ?view=…&date=… so a refresh or a shared link lands in the same
@@ -85,16 +110,15 @@ function writeUrlState() {
 }
 
 const urlState = readUrlState();
-const initialAnchor = urlState.anchor ||
-  new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
+const initialAnchor = urlState.anchor || todayDate();
 const state = {
   view: urlState.view,
   displayedMonth: utcDate(initialAnchor.getUTCFullYear(), initialAnchor.getUTCMonth(), 1),
   anchorDate: initialAnchor,
   events: [],
-  timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+  timezone: viewerTimezone,
   request: null,
-  jumpYear: now.getFullYear(),
+  jumpYear: todayDate().getUTCFullYear(),
   // Slugs of the groups the calendar is filtered to (any-group match);
   // empty shows every event.
   groupFilter: urlState.groups,
@@ -529,7 +553,7 @@ function renderWeek(week) {
     const hiddenCount = hiddenBands + hiddenTimed;
     const cell = document.createElement("div");
     const isOutside = day.getUTCMonth() !== state.displayedMonth.getUTCMonth();
-    const todayKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    const todayKey = dateKey(todayDate());
     cell.className = [
       "day-cell",
       isOutside ? "outside-month" : "",
@@ -574,7 +598,16 @@ function renderWeek(week) {
   return weekElement;
 }
 
+function renderCalendarTimezone() {
+  const element = document.querySelector("#calendar-timezone");
+  if (!element) return;
+  const label = String(viewerTimezone).replaceAll("_", " ");
+  element.textContent = `Times shown in ${label}`;
+  element.title = `Calendar days and times use your timezone (${viewerTimezone})`;
+}
+
 function renderCalendar() {
+  renderCalendarTimezone();
   updateHeading();
   for (const button of viewSwitcher.querySelectorAll("[data-view]")) {
     const selected = button.dataset.view === state.view;
@@ -1319,13 +1352,90 @@ function formatOccurrenceLabel(occurrence) {
   return occurrence.is_all_day ? `${day} · All day` : `${day} · ${formatTime(occurrence.starts_at)}`;
 }
 
-function formatLocalDates(items) {
-  return items.map((item) => formatDate(dateFromKey(String(item.local_start).slice(0, 10)), {
-    weekday: "short",
-    month: "short",
+// The series start on the event's own calendar (not the viewer's), so the
+// recurrence summary names the submitted weekday even when the viewer is a
+// day ahead or behind.
+function seriesStartKey(event) {
+  if (!event) return null;
+  if (event.is_all_day) return event.start_date;
+  if (!event.starts_at) return null;
+  const zone = event.timezone || viewerTimezone;
+  try {
+    return isoToZonedInput(event.starts_at, zone).slice(0, 10);
+  } catch (_) {
+    return localDateKey(new Date(event.starts_at));
+  }
+}
+
+// Extra/skipped local dates, formatted on the event's calendar. Timed dates
+// keep their wall-clock time (already local to the event timezone); all-day
+// dates show the day only.
+function formatLocalDates(items, event) {
+  const showTime = !(event && event.is_all_day);
+  return items.map((item) => {
+    const raw = String(item.local_start);
+    const dayLabel = formatDate(dateFromKey(raw.slice(0, 10)), {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
+    if (!showTime) return dayLabel;
+    const clock = raw.slice(11, 16);
+    if (!/^\d{2}:\d{2}$/.test(clock)) return dayLabel;
+    const [hour, minute] = clock.split(":").map(Number);
+    const timeLabel = new Intl.DateTimeFormat(undefined, {
+      timeZone: "UTC",
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(new Date(Date.UTC(2024, 0, 1, hour, minute)));
+    return `${dayLabel} · ${timeLabel}`;
+  }).join("\n");
+}
+
+// The selected date told in the timezone the event was submitted in, with a
+// short zone abbreviation. The "When" row stays in the viewer's timezone;
+// this row keeps the original wall-clock time whoever reads it.
+function eventTimezoneRows(event, timing) {
+  if (!event?.timezone) return [];
+  const shown = timing || event;
+  if (shown.is_all_day || !shown.starts_at || !shown.ends_at) return [];
+  const zone = event.timezone;
+  const start = new Date(shown.starts_at);
+  const end = new Date(shown.ends_at);
+  let startKey;
+  let endKey;
+  try {
+    startKey = isoToZonedInput(shown.starts_at, zone).slice(0, 10);
+    endKey = isoToZonedInput(new Date(end.getTime() - 1).toISOString(), zone).slice(0, 10);
+  } catch (_) {
+    return [];
+  }
+  const dateFormatter = new Intl.DateTimeFormat(undefined, {
+    timeZone: zone,
+    weekday: "long",
+    month: "long",
     day: "numeric",
     year: "numeric",
-  })).join("\n");
+  });
+  const timeFormatter = new Intl.DateTimeFormat(undefined, {
+    timeZone: zone,
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  const zonedTimeFormatter = new Intl.DateTimeFormat(undefined, {
+    timeZone: zone,
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  });
+  let text;
+  if (startKey === endKey) {
+    text = `${dateFormatter.format(start)} · ${timeFormatter.format(start)}–${zonedTimeFormatter.format(end)}`;
+  } else {
+    text = `${dateFormatter.format(start)}, ${zonedTimeFormatter.format(start)} – ${dateFormatter.format(end)}, ${zonedTimeFormatter.format(end)}`;
+  }
+  return [metaRow("Event time", text)];
 }
 
 // The event detail view. Clicking an event renders it at once from the
@@ -1515,17 +1625,9 @@ function renderEventDetail(view) {
     status.textContent = [status.textContent, "This date has its own details."].filter(Boolean).join(" ");
   }
   const rows = [metaRow(view.timingLabel || "When", formatEventSchedule(view.timing || event))];
+  rows.push(...eventTimezoneRows(event, view.timing || event));
   const location = [shown("location_name"), shown("location_address")].filter(Boolean).join(" · ");
   if (location) rows.push(metaRow("Where", location));
-  if (event.timezone && !(view.timing || event).is_all_day) {
-    const eventZone = event.timezone.replaceAll("_", " ");
-    rows.push(metaRow(
-      "Timezone",
-      event.timezone === state.timezone
-        ? eventZone
-        : `${eventZone} · times shown in your timezone (${state.timezone.replaceAll("_", " ")})`
-    ));
-  }
   if (event.groups?.length) rows.push(metaRow(event.groups.length === 1 ? "Group" : "Groups", groupPills(event.groups)));
   meta.replaceChildren(...rows);
   meta.hidden = false;
@@ -1552,9 +1654,9 @@ function renderSeriesSection(view) {
   section.hidden = !series;
   if (!series) return;
   const { event } = view;
-  const startKey = occurrenceDayKey(event);
+  const startKey = seriesStartKey(event);
   document.querySelector("#event-series-summary").textContent = event.recurrence_rule
-    ? describeRecurrence(event.recurrence_rule, startKey, event.timezone)
+    ? describeRecurrence(event.recurrence_rule, seriesStartKey(event), event.timezone)
     : "On selected dates";
 
   const rows = [metaRow("Starts", formatDate(dateFromKey(startKey), {
@@ -1566,8 +1668,8 @@ function renderSeriesSection(view) {
   const dates = event.recurrence_dates || [];
   const added = dates.filter((item) => item.kind === "include");
   const skipped = dates.filter((item) => item.kind === "exclude");
-  if (added.length) rows.push(metaRow("Added", formatLocalDates(added)));
-  if (skipped.length) rows.push(metaRow("Skipped", formatLocalDates(skipped)));
+  if (added.length) rows.push(metaRow("Added", formatLocalDates(added, event)));
+  if (skipped.length) rows.push(metaRow("Skipped", formatLocalDates(skipped, event)));
   document.querySelector("#event-series-meta").replaceChildren(...rows);
 
   const selected = view.timingLabel === "When" ? view.timing : null;
@@ -2000,7 +2102,8 @@ function renderMonthJump() {
     button.type = "button";
     button.textContent = name;
     const selected = state.jumpYear === state.displayedMonth.getUTCFullYear() && month === state.displayedMonth.getUTCMonth();
-    const current = state.jumpYear === now.getFullYear() && month === now.getMonth();
+    const today = todayDate();
+    const current = state.jumpYear === today.getUTCFullYear() && month === today.getUTCMonth();
     button.className = [selected ? "selected" : "", current ? "current" : ""].filter(Boolean).join(" ");
     button.setAttribute("aria-current", selected ? "date" : "false");
     button.addEventListener("click", () => {
@@ -3648,9 +3751,7 @@ function bindControls() {
   document.querySelector("#previous-month").addEventListener("click", () => moveStep(-1));
   document.querySelector("#next-month").addEventListener("click", () => moveStep(1));
   document.querySelector("#today-button").addEventListener("click", () => {
-    state.displayedMonth = utcDate(now.getFullYear(), now.getMonth(), 1);
-    state.anchorDate = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
-    loadMonth();
+    showCalendarDate(dateKey(todayDate()));
   });
   for (const button of viewSwitcher.querySelectorAll("[data-view]")) {
     button.addEventListener("click", () => setView(button.dataset.view));
