@@ -88,6 +88,15 @@ or an admin can cancel the event (it stays visible, marked cancelled) or
 delete it (it no longer exists). The open event lives in the URL
 (`?event=…&occurrence=…`), so the link opens straight to that event and date.
 
+Anyone with the link can add events to their own calendar app. The event
+detail view's **Add to your calendar** offers an `.ics` file (Apple Calendar,
+Outlook, and most other apps) or Google Calendar; for a repeating event opened
+on a date, viewers add only that date or every date in the series. A series
+keeps its time in its own timezone across daylight-saving changes and carries
+per-date edits, cancellations, and skipped dates. **Subscribe** in the header
+adds the whole calendar (narrowed to the current group filter) as a feed that
+calendar apps keep up to date, or downloads a copy.
+
 Groups categorize events, and each group has a color that its events,
 pills, and filter chips use. An event can be tagged with several groups: it
 takes its first group's color, and every calendar view (month, week, day, and

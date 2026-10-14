@@ -1509,6 +1509,28 @@ def get_published_event(
     return result
 
 
+def event_occurrence_rows(connection: sqlite3.Connection, event_id: UUID) -> list[dict]:
+    """Every materialized date of an event, scheduled or removed.
+
+    Used to export a published series with its per-date exceptions; the raw
+    `content_override` is returned for the caller to merge.
+    """
+    rows = connection.execute(
+        f"""
+        SELECT {_OCCURRENCE_FIELDS}, status, version FROM event_occurrences
+         WHERE event_id = ? ORDER BY {_OCCURRENCE_KEY}, id
+        """,
+        (str(event_id),),
+    ).fetchall()
+    items = []
+    for row in rows:
+        item = dict(row)
+        item["is_all_day"] = bool(item["is_all_day"])
+        item["instance_cancelled"] = bool(item["instance_cancelled"])
+        items.append(item)
+    return items
+
+
 def review_queue(
     connection: sqlite3.Connection, *, status: str, limit: int, offset: int
 ) -> list[dict]:

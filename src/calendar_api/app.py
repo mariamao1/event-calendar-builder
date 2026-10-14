@@ -12,14 +12,21 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from dateutil.relativedelta import relativedelta
 from fastapi import Depends, FastAPI, Header, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+)
 from fastapi.staticfiles import StaticFiles
 
+from . import ical
 from . import service as postgres_service
 from . import sqlite_service
 from .config import Settings
 from .database import Database, SQLiteDatabase, create_database
-from .errors import ApiError, ValidationError
+from .errors import ApiError, NotFoundError, ValidationError
+from .occurrence_scopes import CONTENT_OVERRIDE_FIELDS, apply_content_override
 from .rate_limit import RateLimiter
 from .schemas import (
     EventRevisionInput,
@@ -33,6 +40,14 @@ from .schemas import (
 from .security import SessionStore, tokens_equal, verify_password
 
 logger = logging.getLogger(__name__)
+
+# A calendar.ics subscription without an explicit range covers recent and
+# upcoming dates (clamped to the materialized window), and asks calendar
+# apps to poll for changes this often.
+FEED_PAST_DAYS = 30
+FEED_FUTURE_MONTHS = 12
+FEED_REFRESH = timedelta(hours=1)
+FEED_PAGE_SIZE = 2000
 
 
 def _parse_boundary(
@@ -57,10 +72,7 @@ def _calendar_range(
     timezone: str,
     settings: Settings,
 ) -> tuple[datetime, datetime, date, date]:
-    try:
-        zone = ZoneInfo(timezone)
-    except ZoneInfoNotFoundError as exc:
-        raise ValidationError("timezone must be a valid IANA timezone") from exc
+    zone = _zone(timezone)
     start_at, start_date, _ = _parse_boundary(start, zone, "start")
     end_at, end_date, end_is_date = _parse_boundary(end, zone, "end")
     if end_at <= start_at:
@@ -82,6 +94,44 @@ def _calendar_range(
             f"range is outside guaranteed coverage [{coverage_start}, {coverage_end})"
         )
     return start_at, end_at, start_date, end_date
+
+
+def _zone(timezone: str) -> ZoneInfo:
+    try:
+        return ZoneInfo(timezone)
+    except ZoneInfoNotFoundError as exc:
+        raise ValidationError("timezone must be a valid IANA timezone") from exc
+
+
+def _feed_range(
+    timezone: str, settings: Settings
+) -> tuple[datetime, datetime, date, date]:
+    """The default calendar.ics range, so a subscription URL never goes stale."""
+    zone = _zone(timezone)
+    today = datetime.now(zone).date()
+    start_date = today - timedelta(
+        days=min(FEED_PAST_DAYS, settings.materialization_past_days)
+    )
+    end_date = today + relativedelta(
+        months=min(FEED_FUTURE_MONTHS, settings.materialization_future_months)
+    )
+    return (
+        datetime.combine(start_date, time.min, zone).astimezone(UTC),
+        datetime.combine(end_date, time.min, zone).astimezone(UTC),
+        start_date,
+        end_date,
+    )
+
+
+def _calendar_file(body: str, filename: str) -> Response:
+    return Response(
+        content=body,
+        media_type="text/calendar; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-cache",
+        },
+    )
 
 
 def create_app(
@@ -621,6 +671,163 @@ def create_app(
                 "offset": offset,
             },
         }
+
+    def export_row(detail: dict, row: dict) -> dict:
+        """One materialized date of a series with its own content merged in."""
+        item = {field: detail.get(field) for field in CONTENT_OVERRIDE_FIELDS}
+        item.update(row)
+        apply_content_override(item, item.pop("content_override", None))
+        item["is_cancelled"] = bool(detail["is_cancelled"]) or bool(
+            item.pop("instance_cancelled", False)
+        )
+        item["groups"] = detail["groups"]
+        return item
+
+    def published_export(
+        event_id: UUID, occurrence: UUID | None
+    ) -> tuple[dict, dict | None, list[dict]]:
+        """The published event, the requested date (if any), and its rows."""
+        with database.connection() as connection:
+            detail = service.get_published_event(
+                connection, event_id, occurrence_id=occurrence
+            )
+            rows = (
+                service.event_occurrence_rows(connection, event_id)
+                if detail["series"] is not None or occurrence is not None
+                else []
+            )
+        selected = None
+        if occurrence is not None:
+            if detail["occurrence"] is None:
+                raise NotFoundError("occurrence not found")
+            row = next(
+                (item for item in rows if str(item["occurrence_id"]) == str(occurrence)),
+                None,
+            )
+            if row is None:
+                raise NotFoundError("occurrence not found")
+            selected = export_row(detail, row)
+        return detail, selected, rows
+
+    @app.get("/api/v1/events/{event_id}/ics", dependencies=[link])
+    def event_ics(event_id: UUID, occurrence: UUID | None = None) -> Response:
+        """Download a published event for a calendar app (RFC 5545 .ics).
+
+        A repeating event exports its whole series, keeping its wall-clock
+        time in its own timezone, with per-date edits, cancellations, and
+        skips; `occurrence` exports only that date. Re-downloading updates
+        the same entry, since UIDs are stable.
+        """
+        detail, selected, rows = published_export(event_id, occurrence)
+        if selected is not None:
+            components = [
+                ical.single_vevent(
+                    selected,
+                    leaf=selected["occurrence_id"],
+                    sequence=selected["version"],
+                )
+            ]
+        elif detail["series"] is None:
+            components = [
+                ical.single_vevent(
+                    detail,
+                    leaf=detail["event_id"],
+                    sequence=detail.get("revision_number") or 0,
+                )
+            ]
+        else:
+            components = ical.series_components(
+                detail, [export_row(detail, row) for row in rows]
+            )
+        return _calendar_file(
+            ical.build_calendar(components),
+            ical.slug_filename(detail["title"], event_id),
+        )
+
+    @app.get("/api/v1/events/{event_id}/google", dependencies=[link])
+    def event_google(
+        event_id: UUID, occurrence: UUID | None = None
+    ) -> RedirectResponse:
+        """Redirect to Google Calendar's "add event" page for this event.
+
+        A repeating event carries its rule and timezone; Google's template
+        cannot carry per-date exceptions, which the .ics export does.
+        `occurrence` adds only that date.
+        """
+        detail, selected, _ = published_export(event_id, occurrence)
+        item = selected or detail
+        repeating = selected is None and detail["series"] is not None
+        url = ical.google_calendar_url(
+            title=item.get("title") or "",
+            starts_at=item.get("starts_at"),
+            ends_at=item.get("ends_at"),
+            start_date=item.get("start_date"),
+            end_date=item.get("end_date"),
+            is_all_day=bool(item["is_all_day"]),
+            description=item.get("description") or "",
+            location=ical.location_text(item),
+            timezone=detail["timezone"] if repeating else None,
+            recurrence_rule=detail.get("recurrence_rule") if repeating else None,
+        )
+        return RedirectResponse(url, status_code=status.HTTP_303_SEE_OTHER)
+
+    @app.get("/api/v1/calendar.ics", dependencies=[link])
+    def calendar_ics(
+        start: str | None = None,
+        end: str | None = None,
+        timezone: str = "UTC",
+        group: Annotated[list[str] | None, Query()] = None,
+    ) -> Response:
+        """The published calendar as a feed for calendar apps (RFC 5545).
+
+        Subscribe to this URL (for example as `webcal://`) to keep a calendar
+        app in sync, or download it as a snapshot. It holds the same dates as
+        `GET /api/v1/calendar`, one event per date. Without `start`/`end` it
+        covers the last 30 days through the next 12 months, so a subscription
+        stays current; `group` narrows it like the calendar filter.
+        """
+        if (start is None) != (end is None):
+            raise ValidationError("pass both start and end, or neither")
+        if start is None or end is None:
+            start_at, end_at, start_date, end_date = _feed_range(timezone, settings)
+        else:
+            start_at, end_at, start_date, end_date = _calendar_range(
+                start, end, timezone, settings
+            )
+        group_slugs = list(dict.fromkeys(group or []))
+        items: list[dict] = []
+        with database.connection() as connection:
+            has_more = True
+            while has_more:
+                page, has_more = service.calendar_occurrences(
+                    connection,
+                    start_at=start_at,
+                    end_at=end_at,
+                    start_date=start_date,
+                    end_date=end_date,
+                    group_slugs=group_slugs,
+                    limit=FEED_PAGE_SIZE,
+                    offset=len(items),
+                )
+                items.extend(page)
+            names = {
+                item["slug"]: item["name"]
+                for item in service.list_groups(connection, include_inactive=False)
+            }
+        now = datetime.now(UTC)
+        components = [
+            ical.single_vevent(
+                item, leaf=item["occurrence_id"], sequence=item["version"], now=now
+            )
+            for item in items
+        ]
+        name = ical.CALENDAR_NAME
+        if group_slugs:
+            name += " · " + ", ".join(names.get(slug, slug) for slug in group_slugs)
+        return _calendar_file(
+            ical.build_calendar(components, name=name, refresh=FEED_REFRESH),
+            "community-calendar.ics",
+        )
 
     @app.get("/api/v1/admin/events", dependencies=[admin])
     def admin_events(

@@ -112,6 +112,9 @@ Public routes:
 | `GET` | `/api/v1/groups` | Active filter groups |
 | `GET` | `/api/v1/calendar` | Published occurrences in a range |
 | `GET` | `/api/v1/events/{event_id}` | One published event; `?occurrence=` adds that date and series context |
+| `GET` | `/api/v1/events/{event_id}/ics` | One published event as an iCalendar (`.ics`) download; `?occurrence=` exports only that date |
+| `GET` | `/api/v1/events/{event_id}/google` | `303` redirect to Google Calendar's add-event page; `?occurrence=` adds only that date |
+| `GET` | `/api/v1/calendar.ics` | Published occurrences as a subscribable iCalendar feed |
 | `POST` | `/api/v1/events` | Submit revision 1 for review |
 | `GET` | `/api/v1/events/{event_id}/manage` | Load creator-owned editable content |
 | `POST` | `/api/v1/events/{event_id}/revisions` | Submit a creator-owned edit for review (or a scoped edit; see below) |
@@ -172,6 +175,37 @@ creator reads (all report it as missing). Both operations require either admin
 authentication or the event creator's `X-Event-Management-Token`; cancelling an
 already-cancelled event reports `409`, and any operation on a deleted event
 reports `404`.
+
+## Calendar export
+
+Link holders can carry events into their own calendar app. All export routes
+are gated by the calendar link token like the other public reads, and only
+published content is exported.
+
+- `GET /api/v1/events/{event_id}/ics` downloads an RFC 5545 file. A one-off
+  event, or one date of a series (`?occurrence=`), is a single `VEVENT` with
+  UTC times. A repeating event exports its whole series as one `VEVENT` with
+  `DTSTART;TZID=<event timezone>` and a generated `VTIMEZONE`, so it keeps its
+  wall-clock time across daylight-saving changes, plus its `RRULE`, `RDATE`
+  (added dates), and `EXDATE` (excluded and skipped dates). Dates edited,
+  moved, or cancelled on their own follow as `RECURRENCE-ID` overrides.
+  Cancelled content exports with `STATUS:CANCELLED` rather than disappearing,
+  so an entry already in someone's calendar updates. UIDs are stable
+  (`<event_id>@event-calendar` for an event or series,
+  `<occurrence_id>@event-calendar` for a single date), so re-importing
+  updates the same entry.
+- `GET /api/v1/events/{event_id}/google` redirects to Google Calendar's
+  event template. A series passes its rule and timezone; Google's template
+  cannot carry per-date exceptions, which the `.ics` export does.
+- `GET /api/v1/calendar.ics` is the calendar as a feed: the same occurrences
+  as `GET /api/v1/calendar`, one UTC `VEVENT` per date, with group names as
+  `CATEGORIES`. `start`/`end`/`timezone` behave as on the calendar read; without
+  them the feed covers the last 30 days through the next 12 months (clamped to
+  the materialized window), so a subscription URL never goes stale. `group`
+  narrows it like the calendar filter. The feed names itself via
+  `X-WR-CALNAME` and asks clients to refresh hourly
+  (`REFRESH-INTERVAL`/`X-PUBLISHED-TTL`). A subscription URL embeds the link
+  token, so it grants the same read access as the calendar link.
 
 ## Scoped edits and removals of recurring events
 

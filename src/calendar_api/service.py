@@ -1403,6 +1403,22 @@ def get_published_event(
     return result
 
 
+def event_occurrence_rows(connection: Connection, event_id: UUID) -> list[dict]:
+    """Every materialized date of an event, scheduled or removed.
+
+    Used to export a published series with its per-date exceptions; the raw
+    `content_override` is returned for the caller to merge.
+    """
+    rows = connection.execute(
+        f"""
+        SELECT {_OCCURRENCE_FIELDS}, status, version FROM event_occurrences
+         WHERE event_id = %s ORDER BY {_OCCURRENCE_KEY}, id
+        """,
+        (event_id,),
+    ).fetchall()
+    return [_as_dict(row) for row in rows]
+
+
 def review_queue(
     connection: Connection, *, status: str, limit: int, offset: int
 ) -> list[dict]:

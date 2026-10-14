@@ -1444,7 +1444,7 @@ function eventTimezoneRows(event, timing) {
 // lives in the URL as ?event=…&occurrence=…, so the address bar is itself a
 // link back to this event; "Copy link" shares the same event with the
 // calendar positioned on its date.
-const eventDetail = { eventId: null, occurrenceId: null, request: null, view: null };
+const eventDetail = { eventId: null, occurrenceId: null, request: null, view: null, exportScope: null };
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function writeEventUrl() {
@@ -1596,6 +1596,7 @@ function renderEventDetail(view) {
     description.textContent = "";
     link.hidden = true;
     footnote.textContent = "";
+    renderEventExport(view);
     renderSeriesSection(null);
     renderAdminPanel(view);
     renderEventActions(view);
@@ -1643,9 +1644,91 @@ function renderEventDetail(view) {
     ? `${event.revision_number > 1 ? "Last updated" : "Published"} ${published}`
     : "";
 
+  renderEventExport(view);
   renderSeriesSection(view);
   renderAdminPanel(view);
   renderEventActions(view);
+}
+
+// "Add to your calendar": the published event as an .ics file (Apple
+// Calendar, Outlook, and most other apps) or Google Calendar's add-event
+// page. For a repeating event opened on a date, viewers choose that date
+// alone (the default) or every date; the series keeps its own timezone and
+// carries per-date changes, which Google's add-event page cannot.
+function eventExportUrl(kind, eventId, occurrenceId) {
+  const url = new URL(`/api/v1/events/${eventId}/${kind}`, window.location.origin);
+  if (occurrenceId) url.searchParams.set("occurrence", occurrenceId);
+  return urlWithAccessToken(`${url.pathname}${url.search}`);
+}
+
+function renderEventExport(view) {
+  const section = document.querySelector("#event-dialog-export");
+  const { event } = view;
+  const eventId = eventDetail.eventId;
+  section.hidden = !event || !eventId;
+  if (section.hidden) return;
+  const recurring = Boolean(view.series || event.recurrence_rule);
+  const selected = recurring && view.timingLabel === "When" ? view.timing : null;
+  const scope = selected?.occurrence_id ? eventDetail.exportScope || "occurrence" : "series";
+  document.querySelector("#event-export-scope").hidden = !selected?.occurrence_id;
+  if (selected?.occurrence_id) {
+    document.querySelector("#event-export-occurrence-label").textContent =
+      `Only ${formatOccurrenceLabel(selected)}`;
+  }
+  for (const radio of section.querySelectorAll('input[name="event-export-scope"]')) {
+    radio.checked = radio.value === scope;
+  }
+  const occurrenceId = scope === "occurrence" ? selected.occurrence_id : null;
+  document.querySelector("#event-export-ics").href = eventExportUrl("ics", eventId, occurrenceId);
+  document.querySelector("#event-export-google").href = eventExportUrl("google", eventId, occurrenceId);
+  const series = view.series;
+  const hasDateChanges = Boolean(series?.skipped?.length || series?.upcoming?.some(
+    (item) => item.has_override || item.is_cancelled || item.is_exception,
+  ));
+  document.querySelector("#event-export-help").textContent = scope === "series" && hasDateChanges
+    ? "The .ics file opens in most calendar apps and includes changes to single dates. Google Calendar gets the repeating pattern only."
+    : "The .ics file opens in Apple Calendar, Outlook, and most other calendar apps.";
+}
+
+// Subscribing keeps a calendar app in sync with the published calendar
+// (narrowed by the current group filter). The feed address carries the
+// private link token, like the calendar link itself.
+const subscribeDialog = document.querySelector("#subscribe-dialog");
+
+function calendarFeedUrl() {
+  const url = new URL("/api/v1/calendar.ics", window.location.origin);
+  const token = accessToken();
+  if (token) url.searchParams.set("token", token);
+  for (const slug of state.groupFilter) url.searchParams.append("group", slug);
+  return url.href;
+}
+
+function openSubscribeDialog() {
+  const feed = calendarFeedUrl();
+  const webcal = feed.replace(/^https?:/, "webcal:");
+  document.querySelector("#subscribe-webcal").href = webcal;
+  document.querySelector("#subscribe-google").href =
+    `https://calendar.google.com/calendar/render?cid=${encodeURIComponent(webcal)}`;
+  document.querySelector("#subscribe-download").href = feed;
+  document.querySelector("#subscribe-url").value = feed;
+  document.querySelector("#subscribe-copy").textContent = "Copy";
+  const filter = document.querySelector("#subscribe-filter");
+  const summary = groupFilterSummary();
+  filter.hidden = !summary;
+  filter.textContent = summary ? `Only events${summary}, matching the calendar filter.` : "";
+  subscribeDialog.showModal();
+}
+
+async function copySubscribeUrl() {
+  const input = document.querySelector("#subscribe-url");
+  const button = document.querySelector("#subscribe-copy");
+  try {
+    await navigator.clipboard.writeText(input.value);
+    button.textContent = "Copied";
+  } catch (_) {
+    input.focus();
+    input.select();
+  }
 }
 
 function renderSeriesSection(view) {
@@ -2079,7 +2162,7 @@ async function restoreOccurrence(occurrence, button) {
 
 function closeEventDetail() {
   if (eventDetail.request) eventDetail.request.abort();
-  Object.assign(eventDetail, { eventId: null, occurrenceId: null, request: null, view: null });
+  Object.assign(eventDetail, { eventId: null, occurrenceId: null, request: null, view: null, exportScope: null });
   writeEventUrl();
 }
 
@@ -3800,6 +3883,14 @@ function bindControls() {
     groupSlugEdited = event.target.value !== "";
   });
   document.querySelector("#copy-event-link-button").addEventListener("click", copyEventLink);
+  for (const radio of document.querySelectorAll('input[name="event-export-scope"]')) {
+    radio.addEventListener("change", () => {
+      eventDetail.exportScope = radio.value;
+      if (eventDetail.view) renderEventExport(eventDetail.view);
+    });
+  }
+  document.querySelector("#subscribe-button").addEventListener("click", openSubscribeDialog);
+  document.querySelector("#subscribe-copy").addEventListener("click", copySubscribeUrl);
   document.querySelector("#scope-confirm").addEventListener("click", () => {
     const selected = document.querySelector('input[name="scope-choice"]:checked');
     settleScopeChoice(selected ? selected.value : "single");

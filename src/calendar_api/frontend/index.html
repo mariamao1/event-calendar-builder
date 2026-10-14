@@ -28,6 +28,7 @@
           <button class="quiet-button" id="admin-button" type="button">Admin sign in</button>
           <button class="quiet-button" id="review-queue-button" type="button" hidden>Review queue <span id="review-queue-count" class="review-count" aria-hidden="true"></span></button>
           <button class="quiet-button" id="manage-groups-button" type="button" hidden>Groups</button>
+          <button class="quiet-button" id="subscribe-button" type="button" aria-haspopup="dialog" aria-controls="subscribe-dialog">Subscribe</button>
           <button class="primary-button" id="create-event-button" type="button">Add an event</button>
         </div>
       </header>
@@ -149,6 +150,18 @@
           Event website
           <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 13 13.5 6.5M9 6.5h4.5V11M13 14H6V7h3" /></svg>
         </a>
+        <section id="event-dialog-export" class="event-export" aria-labelledby="event-export-heading" hidden>
+          <h3 id="event-export-heading" class="event-section-heading">Add to your calendar</h3>
+          <div id="event-export-scope" class="event-export-scope" role="radiogroup" aria-label="Dates to add" hidden>
+            <label class="check-row"><input type="radio" name="event-export-scope" value="occurrence" /> <span id="event-export-occurrence-label">Only this date</span></label>
+            <label class="check-row"><input type="radio" name="event-export-scope" value="series" /> <span>Every date in the series</span></label>
+          </div>
+          <div class="export-links">
+            <a id="event-export-ics" class="quiet-button link-button" href="#" download>Apple / Outlook (.ics)</a>
+            <a id="event-export-google" class="quiet-button link-button" href="#" target="_blank" rel="noopener noreferrer">Google Calendar</a>
+          </div>
+          <p id="event-export-help" class="field-help"></p>
+        </section>
         <section id="event-dialog-series" class="event-series" aria-labelledby="event-series-heading" hidden>
           <h3 id="event-series-heading" class="event-section-heading">Repeating series</h3>
           <p id="event-series-summary" class="event-series-summary"></p>
@@ -183,6 +196,34 @@
           <button class="primary-button" id="edit-event-button" type="button" hidden>Edit event</button>
         </div>
         <label id="event-share-fallback" class="field-label event-share-fallback" hidden>Event link<input id="event-share-url" readonly /></label>
+      </div>
+    </dialog>
+
+    <dialog id="subscribe-dialog" class="form-dialog" aria-labelledby="subscribe-title">
+      <div class="dialog-surface compact-dialog">
+        <div class="dialog-header form-dialog-header">
+          <div>
+            <p class="eyebrow">Calendar feed</p>
+            <h2 id="subscribe-title">Subscribe in your calendar app</h2>
+            <p class="form-intro">Approved events show up in your own calendar and stay up to date as they change. Calendar apps check for changes every few hours.</p>
+          </div>
+          <button class="icon-close" type="button" data-close="subscribe-dialog" aria-label="Close subscribe">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" /></svg>
+          </button>
+        </div>
+        <p id="subscribe-filter" class="subscribe-filter" hidden></p>
+        <div class="export-links">
+          <a id="subscribe-webcal" class="primary-button link-button" href="#">Apple Calendar / Outlook</a>
+          <a id="subscribe-google" class="quiet-button link-button" href="#" target="_blank" rel="noopener noreferrer">Google Calendar</a>
+          <a id="subscribe-download" class="quiet-button link-button" href="#" download>Download a copy (.ics)</a>
+        </div>
+        <label class="field-label subscribe-url">Feed address
+          <span class="subscribe-url-row">
+            <input id="subscribe-url" readonly />
+            <button class="quiet-button" id="subscribe-copy" type="button">Copy</button>
+          </span>
+        </label>
+        <p class="field-help">Paste this address into any calendar app that can subscribe by URL. It contains this calendar’s private link, so share it only with people who may see the calendar.</p>
       </div>
     </dialog>
 

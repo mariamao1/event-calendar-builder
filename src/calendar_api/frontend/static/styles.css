@@ -2240,6 +2240,59 @@ dialog::backdrop {
   line-height: 1.5;
 }
 
+/* Adding an event, or the whole calendar, to the viewer's calendar app */
+.event-export {
+  margin-top: 22px;
+}
+
+.event-export[hidden],
+.event-export-scope[hidden],
+.subscribe-filter[hidden] {
+  display: none;
+}
+
+.event-export-scope {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin-top: 10px;
+}
+
+.export-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 12px 0 8px;
+}
+
+.link-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+}
+
+.subscribe-filter {
+  margin: 14px 0 0;
+  font-size: 0.8rem;
+  font-weight: 750;
+}
+
+.subscribe-url {
+  margin-top: 14px;
+}
+
+.subscribe-url-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.subscribe-url-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .event-admin-pending[hidden],
 .event-share-fallback[hidden] {
   display: none;
