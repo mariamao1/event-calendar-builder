@@ -39,6 +39,11 @@ Its semantics are:
 - Repeated `group` values use **any-group** matching. No group parameter means
   all active groups. Unknown and inactive slugs return `422`, making frontend
   typos visible.
+- `q` (also accepted as `search`/`query`) narrows to events whose title,
+  description, or location contains every whitespace-separated token,
+  case-insensitively. Blank means no filtering. It combines with `group`
+  (both apply), and per-date content edits are found by their own wording.
+  `meta.search` echoes the normalized query.
 - Only scheduled occurrences of approved, published revisions are returned.
   Events without a group are included in unfiltered reads; events assigned only
   to inactive groups remain hidden. Deleted groups no longer count as

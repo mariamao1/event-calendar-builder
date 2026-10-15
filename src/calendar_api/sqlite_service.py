@@ -1208,6 +1208,23 @@ def materialize_all(
     return {"events_processed": processed, "occurrences_inserted": inserted}
 
 
+def _search_tokens(search: str | None) -> list[str]:
+    """Lowercased whitespace-separated tokens; empty when there is no query."""
+    if not search or not search.strip():
+        return []
+    return [token.lower() for token in search.split()]
+
+
+# Searchable event text, preferring a per-date override when one exists so a
+# diverged date is found by its own wording as well as the series wording.
+_SEARCH_FIELDS = (
+    ("title", "r.title"),
+    ("description", "r.description"),
+    ("location_name", "r.location_name"),
+    ("location_address", "r.location_address"),
+)
+
+
 def calendar_occurrences(
     connection: sqlite3.Connection,
     *,
@@ -1218,7 +1235,9 @@ def calendar_occurrences(
     group_slugs: list[str],
     limit: int,
     offset: int,
+    search: str | None = None,
 ) -> tuple[list[dict], bool]:
+    tokens = _search_tokens(search)
     if group_slugs:
         placeholders = ",".join("?" for _ in group_slugs)
         found = connection.execute(
@@ -1249,6 +1268,15 @@ def calendar_occurrences(
           )
         """
         params.extend(group_slugs)
+    search_clause = ""
+    for token in tokens:
+        alternatives = " OR ".join(
+            f"INSTR(LOWER(COALESCE(json_extract(o.content_override, '$.{key}'),"
+            f" {base}, '')), ?) > 0"
+            for key, base in _SEARCH_FIELDS
+        )
+        search_clause += f" AND ({alternatives})"
+        params.extend([token] * len(_SEARCH_FIELDS))
     params.extend((limit + 1, offset))
     rows = connection.execute(
         f"""
@@ -1280,6 +1308,7 @@ def calendar_occurrences(
            AND ((o.is_all_day = 0 AND o.starts_at < ? AND o.ends_at > ?)
              OR (o.is_all_day = 1 AND o.start_date < ? AND o.end_date > ?))
            {group_clause}
+           {search_clause}
          ORDER BY coalesce(o.starts_at, o.start_date), o.event_id, o.id
          LIMIT ? OFFSET ?
         """,

@@ -107,7 +107,10 @@ fit is left off whole rather than cut in half. Hovering an event or a circle
 (or a screen reader) gives the group names. Anyone can narrow the calendar with the
 **Groups** chips above the grid (selecting several shows events in any of
 them; the selection lives in the URL as `?group=arts&group=music`) and tag
-their submissions with active groups. Only signed-in admins see **Groups** in
+their submissions with active groups. A search box above the chips narrows
+every view by event title, description, or location (for example `?q=jazz`),
+lists the matching activities under the bar so each can be opened directly,
+and combines with the group selection. Only signed-in admins see **Groups** in
 the header, where they create groups (name, link name, color, description),
 rename, recolor, deactivate, or delete them; the server enforces this on
 every group-management route. Deactivating a group hides it along with events

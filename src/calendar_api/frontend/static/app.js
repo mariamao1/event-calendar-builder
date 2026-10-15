@@ -87,10 +87,13 @@ function parseAnchor(value) {
 function readUrlState() {
   const params = new URLSearchParams(window.location.search);
   const view = params.get("view");
+  // `q` is the canonical search key; `search` stays readable in shared links.
+  const search = (params.get("q") || params.get("search") || "").trim();
   return {
     view: ["month", "week", "day"].includes(view) ? view : "month",
     anchor: parseAnchor(params.get("date")),
     groups: [...new Set(params.getAll("group"))].filter((slug) => GROUP_SLUG_PATTERN.test(slug)),
+    search,
   };
 }
 
@@ -102,6 +105,9 @@ function writeUrlState() {
     url.searchParams.set("date", dateKey(anchor));
     url.searchParams.delete("group");
     for (const slug of state.groupFilter) url.searchParams.append("group", slug);
+    url.searchParams.delete("q");
+    url.searchParams.delete("search");
+    if (state.search) url.searchParams.set("q", state.search);
     // Replace, don't push: stepping through weeks shouldn't flood history.
     window.history.replaceState(null, "", url);
   } catch (_) {
@@ -123,6 +129,9 @@ const state = {
   // empty shows every event.
   groupFilter: urlState.groups,
   groups: [],
+  // Free-text query matched against event title, description, and location;
+  // empty shows every event. Combines with the group filter (both apply).
+  search: urlState.search,
 };
 
 function utcDate(year, month, day) {
@@ -632,6 +641,59 @@ function renderCalendar() {
   } else {
     renderTimeView([state.anchorDate], dayAllDay, dayGrid);
   }
+  renderSearchResults();
+}
+
+// Matching activities for the current search, listed under the search bar.
+// The rows come from the same filtered calendar request as the grid, so the
+// list and the visible events always agree; selecting a row opens that event.
+const SEARCH_RESULTS_LIMIT = 50;
+
+function renderSearchResults() {
+  const container = document.querySelector("#search-results");
+  if (!container) return;
+  if (!state.search) {
+    container.hidden = true;
+    container.replaceChildren();
+    return;
+  }
+  container.hidden = false;
+  const heading = document.createElement("p");
+  heading.className = "search-results-heading";
+  const count = state.events.length;
+  heading.textContent = count === 0
+    ? `No events match \u201c${state.search}\u201d in this view.`
+    : `${count} result${count === 1 ? "" : "s"} for \u201c${state.search}\u201d`;
+  const list = document.createElement("ul");
+  list.className = "search-results-list";
+  for (const event of state.events.slice(0, SEARCH_RESULTS_LIMIT)) {
+    const item = document.createElement("li");
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = ["search-result", cancelledClass(event)].filter(Boolean).join(" ");
+    row.style.setProperty("--event-color", groupColor(event).solid);
+    row.setAttribute("aria-label", eventAriaLabel(event));
+    row.title = eventAriaLabel(event);
+    const title = document.createElement("span");
+    title.className = "search-result-title";
+    title.textContent = event.title;
+    appendRepeatIcon(title, event);
+    const when = document.createElement("span");
+    when.className = "search-result-when";
+    when.textContent = formatOccurrenceLabel(event);
+    row.append(title, when);
+    appendGroupTags(row, event);
+    row.addEventListener("click", () => openEventDialog(event));
+    item.append(row);
+    list.append(item);
+  }
+  container.replaceChildren(heading, list);
+  if (count > SEARCH_RESULTS_LIMIT) {
+    const more = document.createElement("p");
+    more.className = "search-results-more";
+    more.textContent = `Showing the first ${SEARCH_RESULTS_LIMIT}. Refine your search to narrow it down.`;
+    container.append(more);
+  }
 }
 
 function updateHeading() {
@@ -930,6 +992,7 @@ async function loadMonth({ quiet = false } = {}) {
   const token = accessToken();
   if (token) params.set("token", token);
   for (const slug of state.groupFilter) params.append("group", slug);
+  if (state.search) params.set("q", state.search);
 
   calendarFrame.setAttribute("aria-busy", "true");
   // A quiet refresh keeps the old count until the new one arrives.
@@ -955,7 +1018,7 @@ async function loadMonth({ quiet = false } = {}) {
     }
     state.events = allEvents;
     renderCalendar();
-    statusRegion.textContent = `${allEvents.length} approved event${allEvents.length === 1 ? "" : "s"}${groupFilterSummary()}`;
+    statusRegion.textContent = `${allEvents.length} approved event${allEvents.length === 1 ? "" : "s"}${groupFilterSummary()}${searchSummary()}`;
   } catch (error) {
     if (error.name === "AbortError") return;
     state.events = [];
@@ -999,6 +1062,54 @@ function groupFilterSummary() {
     return ` in ${new Intl.ListFormat(undefined, { type: "disjunction" }).format(names)}`;
   } catch (_) {
     return ` in ${names.join(" or ")}`;
+  }
+}
+
+function searchSummary() {
+  if (!state.search) return "";
+  return ` matching \u201c${state.search}\u201d`;
+}
+
+// Free-text search across event title, description, and location. It narrows
+// the same calendar request as the group chips, so both filters apply
+// together; the query lives in the URL (?q=…) so searches can be shared.
+function setSearch(value) {
+  state.search = value.trim();
+  const input = document.querySelector("#event-search");
+  if (input && input.value !== value) input.value = value;
+  const clear = document.querySelector("#search-clear");
+  if (clear) clear.hidden = !state.search;
+  loadMonth({ quiet: true });
+}
+
+function bindSearchControls() {
+  const input = document.querySelector("#event-search");
+  const clear = document.querySelector("#search-clear");
+  if (!input) return;
+  input.value = state.search || "";
+  if (clear) clear.hidden = !state.search;
+  let timer = null;
+  input.addEventListener("input", () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => setSearch(input.value), 250);
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      clearTimeout(timer);
+      setSearch(input.value);
+    }
+    if (event.key === "Escape" && input.value) {
+      clearTimeout(timer);
+      setSearch("");
+      input.focus();
+    }
+  });
+  if (clear) {
+    clear.addEventListener("click", () => {
+      clearTimeout(timer);
+      setSearch("");
+      input.focus();
+    });
   }
 }
 
@@ -1700,6 +1811,7 @@ function calendarFeedUrl() {
   const token = accessToken();
   if (token) url.searchParams.set("token", token);
   for (const slug of state.groupFilter) url.searchParams.append("group", slug);
+  if (state.search) url.searchParams.set("q", state.search);
   return url.href;
 }
 
@@ -1713,7 +1825,7 @@ function openSubscribeDialog() {
   document.querySelector("#subscribe-url").value = feed;
   document.querySelector("#subscribe-copy").textContent = "Copy";
   const filter = document.querySelector("#subscribe-filter");
-  const summary = groupFilterSummary();
+  const summary = `${groupFilterSummary()}${searchSummary()}`;
   filter.hidden = !summary;
   filter.textContent = summary ? `Only events${summary}, matching the calendar filter.` : "";
   subscribeDialog.showModal();
@@ -3891,6 +4003,7 @@ function bindControls() {
   }
   document.querySelector("#subscribe-button").addEventListener("click", openSubscribeDialog);
   document.querySelector("#subscribe-copy").addEventListener("click", copySubscribeUrl);
+  bindSearchControls();
   document.querySelector("#scope-confirm").addEventListener("click", () => {
     const selected = document.querySelector('input[name="scope-choice"]:checked');
     settleScopeChoice(selected ? selected.value : "single");

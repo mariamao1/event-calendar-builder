@@ -1083,6 +1083,32 @@ def materialize_all(
     return {"events_processed": processed, "occurrences_inserted": inserted}
 
 
+def _search_tokens(search: str | None) -> list[str]:
+    """Lowercased whitespace-separated tokens; empty when there is no query."""
+    if not search or not search.strip():
+        return []
+    return [token.lower() for token in search.split()]
+
+
+# Searchable event text; a per-date override wins when it carries the key so
+# a diverged date is found by its own wording as well as the series wording.
+_SEARCH_FIELDS = (
+    ("title", "r.title"),
+    ("description", "r.description"),
+    ("location_name", "r.location_name"),
+    ("location_address", "r.location_address"),
+)
+
+
+def _effective_search_expr(key: str, base: str) -> str:
+    override = "NULLIF(o.content_override, '')"
+    return (
+        f"CASE WHEN {override} IS NOT NULL AND ({override}::jsonb ? '{key}')"
+        f" THEN COALESCE({override}::jsonb ->> '{key}', '')"
+        f" ELSE COALESCE({base}, '') END"
+    )
+
+
 def calendar_occurrences(
     connection: Connection,
     *,
@@ -1093,7 +1119,9 @@ def calendar_occurrences(
     group_slugs: list[str],
     limit: int,
     offset: int,
+    search: str | None = None,
 ) -> tuple[list[dict], bool]:
+    tokens = _search_tokens(search)
     if group_slugs:
         found = connection.execute(
             "SELECT slug FROM groups WHERE slug = ANY(%s) AND is_active",
@@ -1106,8 +1134,30 @@ def calendar_occurrences(
                 f"unknown or inactive group slug(s): {', '.join(missing)}"
             )
 
+    search_clauses = []
+    params: dict[str, Any] = {
+        "start_at": start_at,
+        "end_at": end_at,
+        "start_date": start_date,
+        "end_date": end_date,
+        "group_slugs": group_slugs,
+        "fetch_limit": limit + 1,
+        "offset": offset,
+    }
+    for index, token in enumerate(tokens):
+        name = f"search_{index}"
+        alternatives = " OR ".join(
+            f"STRPOS(LOWER({_effective_search_expr(key, base)}), %({name})s) > 0"
+            for key, base in _SEARCH_FIELDS
+        )
+        search_clauses.append(f"({alternatives})")
+        params[name] = token
+    search_clause = (
+        "AND (" + " AND ".join(search_clauses) + ")" if search_clauses else ""
+    )
+
     rows = connection.execute(
-        """
+        f"""
         SELECT
           o.id AS occurrence_id, o.event_id, o.version, o.is_exception,
           o.is_all_day, o.starts_at, o.ends_at, o.start_date, o.end_date,
@@ -1155,7 +1205,7 @@ def calendar_occurrences(
                           AND o.end_date > %(start_date)s)
           )
           AND (
-            %(group_slugs)s::text[] = '{}'::text[]
+            %(group_slugs)s::text[] = '{{}}'::text[]
             OR EXISTS (
               SELECT 1
                 FROM event_revision_groups filter_rg
@@ -1165,21 +1215,14 @@ def calendar_occurrences(
                  AND filter_g.is_active
             )
           )
+          {search_clause}
         ORDER BY
           COALESCE(o.starts_at, o.start_date::timestamp AT TIME ZONE o.timezone),
           o.event_id, o.id
         LIMIT %(fetch_limit)s
         OFFSET %(offset)s
         """,
-        {
-            "start_at": start_at,
-            "end_at": end_at,
-            "start_date": start_date,
-            "end_date": end_date,
-            "group_slugs": group_slugs,
-            "fetch_limit": limit + 1,
-            "offset": offset,
-        },
+        params,
     ).fetchall()
     has_more = len(rows) > limit
     items = []

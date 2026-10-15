@@ -96,6 +96,16 @@ def _calendar_range(
     return start_at, end_at, start_date, end_date
 
 
+def _combine_search(*values: str | None) -> str:
+    """Merge the `q`/`search`/`query` aliases into one normalized query.
+
+    `q` is canonical; the others are accepted so callers do not need to
+    guess the name. Multiple values combine with a space and tokenize
+    together downstream; blank input means no filtering.
+    """
+    return " ".join(part.strip() for part in values if part and part.strip())
+
+
 def _zone(timezone: str) -> ZoneInfo:
     try:
         return ZoneInfo(timezone)
@@ -642,11 +652,15 @@ def create_app(
         group: Annotated[list[str] | None, Query()] = None,
         limit: Annotated[int, Query(ge=1, le=2000)] = 500,
         offset: Annotated[int, Query(ge=0)] = 0,
+        q: Annotated[str | None, Query()] = None,
+        search: Annotated[str | None, Query()] = None,
+        query: Annotated[str | None, Query()] = None,
     ) -> dict:
         start_at, end_at, start_date, end_date = _calendar_range(
             start, end, timezone, settings
         )
         group_slugs = list(dict.fromkeys(group or []))
+        search_text = _combine_search(q, search, query)
         with database.connection() as connection:
             items, has_more = service.calendar_occurrences(
                 connection,
@@ -657,6 +671,7 @@ def create_app(
                 group_slugs=group_slugs,
                 limit=limit,
                 offset=offset,
+                search=search_text,
             )
         return {
             "items": items,
@@ -665,6 +680,7 @@ def create_app(
                 "end": end,
                 "timezone": timezone,
                 "groups": group_slugs,
+                "search": search_text,
                 "count": len(items),
                 "has_more": has_more,
                 "limit": limit,
@@ -777,6 +793,9 @@ def create_app(
         end: str | None = None,
         timezone: str = "UTC",
         group: Annotated[list[str] | None, Query()] = None,
+        q: Annotated[str | None, Query()] = None,
+        search: Annotated[str | None, Query()] = None,
+        query: Annotated[str | None, Query()] = None,
     ) -> Response:
         """The published calendar as a feed for calendar apps (RFC 5545).
 
@@ -784,7 +803,8 @@ def create_app(
         app in sync, or download it as a snapshot. It holds the same dates as
         `GET /api/v1/calendar`, one event per date. Without `start`/`end` it
         covers the last 30 days through the next 12 months, so a subscription
-        stays current; `group` narrows it like the calendar filter.
+        stays current; `group` narrows it like the calendar filter and `q`
+        (also accepted as `search`/`query`) narrows it by event text.
         """
         if (start is None) != (end is None):
             raise ValidationError("pass both start and end, or neither")
@@ -795,6 +815,7 @@ def create_app(
                 start, end, timezone, settings
             )
         group_slugs = list(dict.fromkeys(group or []))
+        search_text = _combine_search(q, search, query)
         items: list[dict] = []
         with database.connection() as connection:
             has_more = True
@@ -808,6 +829,7 @@ def create_app(
                     group_slugs=group_slugs,
                     limit=FEED_PAGE_SIZE,
                     offset=len(items),
+                    search=search_text,
                 )
                 items.extend(page)
             names = {
@@ -824,6 +846,8 @@ def create_app(
         name = ical.CALENDAR_NAME
         if group_slugs:
             name += " · " + ", ".join(names.get(slug, slug) for slug in group_slugs)
+        if search_text:
+            name += f" · “{search_text}”"
         return _calendar_file(
             ical.build_calendar(components, name=name, refresh=FEED_REFRESH),
             "community-calendar.ics",

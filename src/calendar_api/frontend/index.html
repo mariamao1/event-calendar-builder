@@ -70,6 +70,21 @@
             </div>
           </div>
 
+          <div class="calendar-search" role="search">
+            <label class="search-field">
+              <span class="sr-only">Search events</span>
+              <input
+                id="event-search"
+                type="search"
+                placeholder="Search events…"
+                aria-label="Search events"
+                autocomplete="off"
+              />
+            </label>
+            <button class="quiet-button" id="search-clear" type="button" hidden>Clear</button>
+          </div>
+          <div id="search-results" class="search-results" aria-live="polite" hidden></div>
+
           <div id="group-filter" class="group-filter" role="group" aria-label="Filter events by group" hidden></div>
 
           <div class="calendar-frame" aria-busy="true">
