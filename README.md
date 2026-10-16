@@ -69,6 +69,13 @@ events. A marker shows the current time when today is visible. The view and
 date live in the URL (`?view=week&date=2026-10-07`), so refreshing or sharing
 the link lands back in the same place.
 
+The calendar works from phone to desktop widths. On phones the header and
+toolbar stack, month cells show two-line titles (tap anywhere in a day for its
+full list), and the week view scrolls sideways under pinned hour labels. With
+a keyboard, the month grid is a single tab stop: the arrow keys move by day or
+week, Home/End jump to the week's ends, Page Up/Down change month (with Shift,
+year), and Enter lists the day's events. Alt+←/→ steps the current view.
+
 Select any event to open its detail view: the full schedule, location,
 description, website, and groups/tags. Repeating events also show the series in
 plain language (for example "Every week on Tuesday · 12 times"), added and

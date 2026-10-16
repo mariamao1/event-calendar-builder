@@ -2,6 +2,10 @@
 
 const MAX_BAND_LANES = 3;
 const MAX_TIMED_PER_DAY = 3;
+// Phone-width month cells hold fewer timed events before "+N more"; the
+// full list is one tap away in the day dialog.
+const COMPACT_MAX_TIMED_PER_DAY = 2;
+const compactLayout = window.matchMedia("(max-width: 520px)");
 const MAX_ALLDAY_ROWS = 3;
 const DAY_MS = 86_400_000;
 const MINUTES_PER_DAY = 1440;
@@ -132,6 +136,9 @@ const state = {
   // Free-text query matched against event title, description, and location;
   // empty shows every event. Combines with the group filter (both apply).
   search: urlState.search,
+  // Set when keyboard navigation pages the month grid, so focus follows
+  // onto the newly rendered month.
+  focusMonthAfterRender: false,
 };
 
 function utcDate(year, month, day) {
@@ -501,6 +508,7 @@ function renderBand(segment) {
   button.style.setProperty("--band-ink", color.ink);
   button.setAttribute("aria-label", eventAriaLabel(event));
   button.title = eventAriaLabel(event);
+  button.tabIndex = -1;
 
   if (!event.is_all_day && !segment.continuesLeft) {
     const time = document.createElement("span");
@@ -521,6 +529,9 @@ function renderBand(segment) {
 function renderTimedEvent(event) {
   const button = document.createElement("button");
   button.type = "button";
+  // The month grid is one tab stop (see bindMonthGridKeys); its day dialog
+  // lists every event for keyboard users, so items skip the tab order.
+  button.tabIndex = -1;
   button.className = ["timed-event", cancelledClass(event)].filter(Boolean).join(" ");
   button.setAttribute("aria-label", eventAriaLabel(event));
   button.title = eventAriaLabel(event);
@@ -550,6 +561,9 @@ function renderWeek(week) {
   );
   weekElement.style.setProperty("--band-rows", visibleLaneCount);
   weekElement.style.setProperty("--band-space", `${visibleLaneCount * 25}px`);
+  const maxTimed = compactLayout.matches ? COMPACT_MAX_TIMED_PER_DAY : MAX_TIMED_PER_DAY;
+  const todayKey = dateKey(todayDate());
+  const focusKey = monthFocusKey();
 
   for (const day of week) {
     const key = dateKey(day);
@@ -558,41 +572,63 @@ function renderWeek(week) {
     const hiddenBands = segments.filter(
       (segment) => segment.lane >= MAX_BAND_LANES && overlapsDay(segment.event, key)
     ).length;
-    const hiddenTimed = Math.max(0, timedEvents.length - MAX_TIMED_PER_DAY);
+    const hiddenTimed = Math.max(0, timedEvents.length - maxTimed);
     const hiddenCount = hiddenBands + hiddenTimed;
     const cell = document.createElement("div");
     const isOutside = day.getUTCMonth() !== state.displayedMonth.getUTCMonth();
-    const todayKey = dateKey(todayDate());
+    const isToday = key === todayKey;
+    const dayLabel = formatDate(day, { weekday: "long", month: "long", day: "numeric", year: "numeric" });
     cell.className = [
       "day-cell",
       isOutside ? "outside-month" : "",
-      key === todayKey ? "today" : "",
+      isToday ? "today" : "",
     ].filter(Boolean).join(" ");
     cell.setAttribute("role", "gridcell");
-    cell.setAttribute("aria-label", formatDate(day, { weekday: "long", month: "long", day: "numeric", year: "numeric" }));
+    cell.setAttribute("aria-label", dayLabel);
+    // Anywhere in a cell that isn't an event opens the day's full list, so
+    // narrow touch cells don't need a precise tap on the date.
+    cell.addEventListener("click", (event) => {
+      if (!event.target.closest("button")) openMonthDay(key);
+    });
 
     const head = document.createElement("div");
     head.className = "day-head";
     const number = document.createElement("button");
     number.type = "button";
     number.className = "day-number";
+    number.dataset.date = key;
+    number.tabIndex = key === focusKey ? 0 : -1;
     number.textContent = String(day.getUTCDate());
-    number.setAttribute("aria-label", `View ${dayEvents.length} event${dayEvents.length === 1 ? "" : "s"} on ${cell.getAttribute("aria-label")}`);
-    number.addEventListener("click", () => openDayDialog(key));
+    const countText = `${dayEvents.length} event${dayEvents.length === 1 ? "" : "s"}`;
+    number.setAttribute("aria-label", `${dayLabel}${isToday ? ", today" : ""}, ${countText}`);
+    if (isToday) number.setAttribute("aria-current", "date");
+    number.addEventListener("click", () => openMonthDay(key));
     head.append(number);
+
+    // The band layer spans the row outside any cell, so it is hidden from
+    // assistive technology; each cell names its all-day events instead.
+    const dayBands = dayEvents.filter(isBandEvent);
+    if (dayBands.length) {
+      const bandSummary = document.createElement("span");
+      bandSummary.className = "sr-only";
+      bandSummary.textContent = `All day or multi-day: ${listText(dayBands.map((event) => event.title))}.`;
+      head.append(bandSummary);
+    }
 
     const timedList = document.createElement("div");
     timedList.className = "timed-events";
-    for (const event of timedEvents.slice(0, MAX_TIMED_PER_DAY)) {
+    for (const event of timedEvents.slice(0, maxTimed)) {
       timedList.append(renderTimedEvent(event));
     }
     if (hiddenCount > 0) {
       const more = document.createElement("button");
       more.type = "button";
       more.className = "more-btn";
-      more.textContent = `+${hiddenCount} more`;
-      more.setAttribute("aria-label", `View ${hiddenCount} more event${hiddenCount === 1 ? "" : "s"} on ${cell.getAttribute("aria-label")}`);
-      more.addEventListener("click", () => openDayDialog(key));
+      more.tabIndex = -1;
+      // Phone-width cells only fit the count; the label still says "more".
+      more.textContent = compactLayout.matches ? `+${hiddenCount}` : `+${hiddenCount} more`;
+      more.setAttribute("aria-label", `View ${hiddenCount} more event${hiddenCount === 1 ? "" : "s"} on ${dayLabel}`);
+      more.addEventListener("click", () => openMonthDay(key));
       timedList.append(more);
     }
     cell.append(head, timedList);
@@ -601,10 +637,79 @@ function renderWeek(week) {
 
   const bandLayer = document.createElement("div");
   bandLayer.className = "week-bands";
-  bandLayer.setAttribute("aria-hidden", "false");
+  bandLayer.setAttribute("aria-hidden", "true");
   for (const segment of visibleBands) bandLayer.append(renderBand(segment));
   weekElement.append(bandLayer);
   return weekElement;
+}
+
+// The month grid is a single tab stop with a roving focus day: the cursor
+// date when it is in the displayed month, else today, else the 1st.
+function monthFocusKey() {
+  const month = state.displayedMonth;
+  const inMonth = (date) =>
+    date.getUTCFullYear() === month.getUTCFullYear() && date.getUTCMonth() === month.getUTCMonth();
+  if (inMonth(state.anchorDate)) return dateKey(state.anchorDate);
+  const today = todayDate();
+  return dateKey(inMonth(today) ? today : month);
+}
+
+function openMonthDay(key) {
+  moveMonthFocus(key, { focus: false });
+  openDayDialog(key);
+}
+
+function focusMonthDay() {
+  monthGrid.querySelector('.day-number[tabindex="0"]')?.focus();
+}
+
+// Moves the roving focus day, paging to its month when it falls outside the
+// visible weeks (focus lands once the new month renders).
+function moveMonthFocus(key, { focus = true } = {}) {
+  const target = dateFromKey(key);
+  state.anchorDate = target;
+  const button = monthGrid.querySelector(`.day-number[data-date="${key}"]`);
+  const sameMonth =
+    target.getUTCFullYear() === state.displayedMonth.getUTCFullYear() &&
+    target.getUTCMonth() === state.displayedMonth.getUTCMonth();
+  if (button && (sameMonth || !focus)) {
+    for (const other of monthGrid.querySelectorAll('.day-number[tabindex="0"]')) other.tabIndex = -1;
+    button.tabIndex = 0;
+    if (focus) button.focus();
+    return;
+  }
+  state.displayedMonth = utcDate(target.getUTCFullYear(), target.getUTCMonth(), 1);
+  state.focusMonthAfterRender = focus;
+  loadMonth();
+}
+
+// Grid keys follow the WAI-ARIA date grid pattern: arrows move by day or
+// week, Home/End to the week's ends, Page Up/Down by month (with Shift, by
+// year), and Enter/Space (native to the day button) opens the day.
+function bindMonthGridKeys() {
+  monthGrid.addEventListener("keydown", (event) => {
+    const button = event.target.closest(".day-number");
+    if (!button || event.altKey || event.ctrlKey || event.metaKey) return;
+    const current = dateFromKey(button.dataset.date);
+    let target = null;
+    if (event.key === "ArrowLeft") target = addDays(current, -1);
+    else if (event.key === "ArrowRight") target = addDays(current, 1);
+    else if (event.key === "ArrowUp") target = addDays(current, -7);
+    else if (event.key === "ArrowDown") target = addDays(current, 7);
+    else if (event.key === "Home") target = addDays(current, -current.getUTCDay());
+    else if (event.key === "End") target = addDays(current, 6 - current.getUTCDay());
+    else if (event.key === "PageUp" || event.key === "PageDown") {
+      const step = (event.key === "PageUp" ? -1 : 1) * (event.shiftKey ? 12 : 1);
+      const year = current.getUTCFullYear();
+      const month = current.getUTCMonth() + step;
+      // Clamp to the target month's length (Jan 31 → Feb 28, not Mar 3).
+      const lastDay = utcDate(year, month + 1, 0).getUTCDate();
+      target = utcDate(year, month, Math.min(current.getUTCDate(), lastDay));
+    }
+    if (!target) return;
+    event.preventDefault();
+    moveMonthFocus(dateKey(target));
+  });
 }
 
 function renderCalendarTimezone() {
@@ -630,14 +735,19 @@ function renderCalendar() {
   weekView.hidden = !showWeek;
   dayView.hidden = showMonth || showWeek;
   if (showMonth) {
+    // Re-rendering replaces the day buttons; keep keyboard focus on the grid.
+    const refocus = state.focusMonthAfterRender || monthGrid.contains(document.activeElement);
+    state.focusMonthAfterRender = false;
     const weeks = visibleWeeks(state.displayedMonth);
     monthGrid.replaceChildren(...weeks.map(renderWeek));
     monthGrid.setAttribute(
       "aria-label",
       formatDate(state.displayedMonth, { month: "long", year: "numeric" })
     );
+    if (refocus) focusMonthDay();
   } else if (showWeek) {
     renderTimeView(weekDays(state.anchorDate), weekAllDay, weekGrid);
+    scrollWeekToAnchor();
   } else {
     renderTimeView([state.anchorDate], dayAllDay, dayGrid);
   }
@@ -853,7 +963,6 @@ function renderTimeView(days, allDayContainer, gridContainer) {
     const header = document.createElement("div");
     const isToday = key === todayKey;
     header.className = ["time-header", isToday ? "today" : ""].filter(Boolean).join(" ");
-    header.setAttribute("role", "columnheader");
     const weekday = document.createElement("span");
     weekday.className = "time-header-weekday";
     weekday.textContent = formatDate(day, { weekday: "short" });
@@ -861,7 +970,8 @@ function renderTimeView(days, allDayContainer, gridContainer) {
     number.type = "button";
     number.className = "day-number";
     number.textContent = String(day.getUTCDate());
-    number.setAttribute("aria-label", `View ${formatDate(day, { weekday: "long", month: "long", day: "numeric" })}`);
+    number.setAttribute("aria-label", `View ${formatDate(day, { weekday: "long", month: "long", day: "numeric" })}${isToday ? ", today" : ""}`);
+    if (isToday) number.setAttribute("aria-current", "date");
     number.addEventListener("click", () => {
       state.anchorDate = day;
       setView("day");
@@ -871,7 +981,9 @@ function renderTimeView(days, allDayContainer, gridContainer) {
 
     const column = document.createElement("div");
     column.className = ["time-column", isToday ? "today" : ""].filter(Boolean).join(" ");
-    column.setAttribute("role", "gridcell");
+    // Each day's events form a labeled group; the view is a plain region
+    // (not a grid) since its events are reached with Tab, not arrow keys.
+    column.setAttribute("role", "group");
     column.setAttribute("aria-label", formatDate(day, { weekday: "long", month: "long", day: "numeric" }));
     column.style.height = `${gridHeight}px`;
     for (let hour = startHour; hour < endHour; hour++) {
@@ -908,6 +1020,23 @@ function renderTimeView(days, allDayContainer, gridContainer) {
   gridContainer.append(body);
   gridContainer.dataset.startHour = String(startHour);
   gridContainer.dataset.endHour = String(endHour);
+}
+
+// On narrow screens the week view scrolls sideways under a pinned hour
+// gutter. Center the cursor day once per cursor date, so refreshes (such as
+// filter changes) leave the reader's scroll position alone.
+function scrollWeekToAnchor() {
+  if (weekView.scrollWidth <= weekView.clientWidth) return;
+  const key = dateKey(state.anchorDate);
+  if (weekView.dataset.scrolledFor === key) return;
+  weekView.dataset.scrolledFor = key;
+  const index = weekDays(state.anchorDate).findIndex((day) => dateKey(day) === key);
+  const column = weekGrid.querySelectorAll(".time-header")[index];
+  if (!column) return;
+  const gutterWidth = weekGrid.querySelector(".time-gutter")?.offsetWidth || 0;
+  const viewLeft = weekView.getBoundingClientRect().left;
+  const columnLeft = column.getBoundingClientRect().left - viewLeft + weekView.scrollLeft;
+  weekView.scrollLeft = columnLeft + column.offsetWidth / 2 - (weekView.clientWidth + gutterWidth) / 2;
 }
 
 function visibleDays() {
@@ -1018,7 +1147,8 @@ async function loadMonth({ quiet = false } = {}) {
     }
     state.events = allEvents;
     renderCalendar();
-    statusRegion.textContent = `${allEvents.length} approved event${allEvents.length === 1 ? "" : "s"}${groupFilterSummary()}${searchSummary()}`;
+    // Lead with the period so screen readers hear where navigation landed.
+    statusRegion.textContent = `${monthLabel.textContent}: ${allEvents.length} approved event${allEvents.length === 1 ? "" : "s"}${groupFilterSummary()}${searchSummary()}`;
   } catch (error) {
     if (error.name === "AbortError") return;
     state.events = [];
@@ -3951,6 +4081,11 @@ function bindControls() {
   for (const button of viewSwitcher.querySelectorAll("[data-view]")) {
     button.addEventListener("click", () => setView(button.dataset.view));
   }
+  bindMonthGridKeys();
+  // Month cells show fewer items at phone width; re-lay them out on rotation.
+  compactLayout.addEventListener("change", () => {
+    if (state.view === "month") renderCalendar();
+  });
   document.querySelector("#month-heading").addEventListener("click", () => {
     state.jumpYear = state.view === "month"
       ? state.displayedMonth.getUTCFullYear()

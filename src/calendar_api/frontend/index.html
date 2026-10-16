@@ -9,6 +9,7 @@
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
+    <a class="skip-link" href="#calendar">Skip to calendar</a>
     <div class="page-shell">
       <header class="site-header">
         <a class="brand" href="/" aria-label="Community Calendar home">
@@ -34,7 +35,7 @@
       </header>
 
       <main>
-        <section class="calendar-card" aria-labelledby="month-heading">
+        <section class="calendar-card" id="calendar" tabindex="-1" aria-labelledby="month-heading">
           <div class="calendar-toolbar">
             <div class="month-heading-wrap">
               <p class="eyebrow">What’s happening</p>
@@ -92,12 +93,13 @@
               <span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span>
               <span>Thu</span><span>Fri</span><span>Sat</span>
             </div>
-            <div id="month-grid" class="month-grid" role="grid"></div>
-            <div id="week-view" class="time-view" role="grid" aria-label="Week view" hidden>
+            <p id="month-grid-help" hidden>Use the arrow keys to move between days, Page Up and Page Down to change months, and Enter to list a day’s events.</p>
+            <div id="month-grid" class="month-grid" role="grid" aria-describedby="month-grid-help"></div>
+            <div id="week-view" class="time-view" role="region" aria-label="Week view" hidden>
               <div id="week-allday" class="allday-row"></div>
               <div id="week-grid" class="time-grid"></div>
             </div>
-            <div id="day-view" class="time-view" role="grid" aria-label="Day view" hidden>
+            <div id="day-view" class="time-view" role="region" aria-label="Day view" hidden>
               <div id="day-allday" class="allday-row"></div>
               <div id="day-grid" class="time-grid"></div>
             </div>
