@@ -3109,8 +3109,142 @@ function setDefaultEventTimes() {
   document.querySelector("#event-end-date").value = localDay;
 }
 
+// Street-address suggestions from OpenStreetMap, via the server's
+// /api/v1/address-suggestions proxy. The field stays free text: suggestions
+// only help, and they quietly stop when the service is off or unreachable.
+const ADDRESS_SUGGEST_DELAY_MS = 300;
+const ADDRESS_SUGGEST_MIN_LENGTH = 3;
+const addressSuggest = { timer: null, controller: null, items: [], active: -1, disabled: false };
+
+function closeAddressSuggestions() {
+  const input = document.querySelector("#event-location-address");
+  clearTimeout(addressSuggest.timer);
+  addressSuggest.controller?.abort();
+  addressSuggest.items = [];
+  addressSuggest.active = -1;
+  document.querySelector("#event-address-popup").hidden = true;
+  document.querySelector("#event-address-suggestions").replaceChildren();
+  input.setAttribute("aria-expanded", "false");
+  input.removeAttribute("aria-activedescendant");
+}
+
+function renderAddressSuggestions(items) {
+  if (!items.length) {
+    closeAddressSuggestions();
+    document.querySelector("#event-address-status").textContent = "No address suggestions.";
+    return;
+  }
+  addressSuggest.items = items;
+  addressSuggest.active = -1;
+  const options = items.map((item, index) => {
+    const option = document.createElement("li");
+    option.id = `event-address-option-${index}`;
+    option.className = "address-option";
+    option.setAttribute("role", "option");
+    option.setAttribute("aria-selected", "false");
+    if (item.name) {
+      const name = document.createElement("span");
+      name.className = "address-option-name";
+      name.textContent = item.name;
+      option.append(name);
+    }
+    const line = document.createElement("span");
+    line.textContent = item.address;
+    option.append(line);
+    // mousedown, not click: choosing must happen before the input's blur
+    // closes the list.
+    option.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      chooseAddressSuggestion(index);
+    });
+    return option;
+  });
+  document.querySelector("#event-address-suggestions").replaceChildren(...options);
+  document.querySelector("#event-address-popup").hidden = false;
+  document.querySelector("#event-location-address").setAttribute("aria-expanded", "true");
+  document.querySelector("#event-address-status").textContent =
+    `${items.length} address suggestion${items.length === 1 ? "" : "s"}. Use the up and down arrows to choose.`;
+}
+
+function highlightAddressSuggestion(index) {
+  const input = document.querySelector("#event-location-address");
+  addressSuggest.active = index;
+  for (const option of document.querySelectorAll("#event-address-suggestions [role=option]")) {
+    const selected = option.id === `event-address-option-${index}`;
+    option.setAttribute("aria-selected", String(selected));
+    if (selected) option.scrollIntoView({ block: "nearest" });
+  }
+  if (index >= 0) input.setAttribute("aria-activedescendant", `event-address-option-${index}`);
+  else input.removeAttribute("aria-activedescendant");
+}
+
+// Picking a suggestion fills the street address, and the location name too
+// when the suggestion is a named place and no name was typed yet.
+function chooseAddressSuggestion(index) {
+  const item = addressSuggest.items[index];
+  if (!item) return;
+  document.querySelector("#event-location-address").value = item.address;
+  const name = document.querySelector("#event-location-name");
+  if (item.name && !name.value.trim()) name.value = item.name;
+  closeAddressSuggestions();
+  document.querySelector("#event-address-status").textContent = `Address set to ${item.label}.`;
+}
+
+async function fetchAddressSuggestions(query) {
+  addressSuggest.controller?.abort();
+  const controller = new AbortController();
+  addressSuggest.controller = controller;
+  try {
+    const params = new URLSearchParams({ q: query });
+    const body = await jsonRequest(
+      urlWithAccessToken(`/api/v1/address-suggestions?${params}`),
+      { signal: controller.signal },
+    );
+    const input = document.querySelector("#event-location-address");
+    if (controller.signal.aborted || document.activeElement !== input) return;
+    renderAddressSuggestions(body.items || []);
+  } catch (error) {
+    if (error.name === "AbortError") return;
+    // 404: suggestions are turned off on this server; stop asking.
+    if (error.status === 404) addressSuggest.disabled = true;
+    closeAddressSuggestions();
+  }
+}
+
+function bindAddressSuggestions() {
+  const input = document.querySelector("#event-location-address");
+  input.addEventListener("input", () => {
+    const query = input.value.trim();
+    closeAddressSuggestions();
+    if (addressSuggest.disabled || query.length < ADDRESS_SUGGEST_MIN_LENGTH) return;
+    addressSuggest.timer = setTimeout(() => fetchAddressSuggestions(query), ADDRESS_SUGGEST_DELAY_MS);
+  });
+  input.addEventListener("keydown", (event) => {
+    const count = addressSuggest.items.length;
+    if (!count) return;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      const next = addressSuggest.active < 0
+        ? (step > 0 ? 0 : count - 1)
+        : (addressSuggest.active + step + count) % count;
+      highlightAddressSuggestion(next);
+    } else if (event.key === "Enter" && addressSuggest.active >= 0) {
+      event.preventDefault();
+      chooseAddressSuggestion(addressSuggest.active);
+    } else if (event.key === "Escape") {
+      // Close the list without closing the whole form dialog.
+      event.preventDefault();
+      event.stopPropagation();
+      closeAddressSuggestions();
+    }
+  });
+  input.addEventListener("blur", closeAddressSuggestions);
+}
+
 function resetEventForm() {
   eventForm.reset();
+  closeAddressSuggestions();
   document.querySelector("#event-form-id").value = "";
   document.querySelector("#recurrence-date-list").replaceChildren();
   timezoneOptions(state.timezone);
@@ -4114,6 +4248,7 @@ function bindControls() {
   document.querySelector("#create-event-button").addEventListener("click", openCreateEventForm);
   document.querySelector("#event-all-day").addEventListener("change", syncTimingFields);
   bindRecurrenceControls();
+  bindAddressSuggestions();
   document.querySelector("#add-recurrence-date").addEventListener("click", () => addRecurrenceDate());
   document.querySelector("#submitter-channel").addEventListener("change", updateSubmitterContactType);
   eventForm.addEventListener("submit", submitEventForm);

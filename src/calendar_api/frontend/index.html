@@ -403,7 +403,17 @@
               <p class="field-help">Add a place, an online link, or both.</p>
               <div class="field-grid">
                 <label class="field-label">Location name<input id="event-location-name" maxlength="240" /></label>
-                <label class="field-label">Street address<input id="event-location-address" maxlength="500" /></label>
+                <div class="field-label address-field">
+                  <label for="event-location-address">Street address</label>
+                  <div class="address-combobox">
+                    <input id="event-location-address" maxlength="500" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="event-address-suggestions" autocomplete="off" />
+                    <div id="event-address-popup" class="address-suggestions" hidden>
+                      <ul id="event-address-suggestions" role="listbox" aria-label="Address suggestions"></ul>
+                      <p class="address-attribution">Suggestions © OpenStreetMap contributors</p>
+                    </div>
+                  </div>
+                  <span id="event-address-status" class="sr-only" aria-live="polite"></span>
+                </div>
               </div>
               <label class="field-label field-wide">Online link<input id="event-virtual-url" type="url" maxlength="2000" placeholder="https://…" /><small>A video call or livestream link for people joining remotely.</small></label>
             </div>

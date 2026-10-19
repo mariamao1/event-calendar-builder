@@ -32,6 +32,13 @@ class Settings:
     submit_rate_limit_window_seconds: int = 3600
     login_rate_limit_max: int = 10
     login_rate_limit_window_seconds: int = 900
+    # Street-address suggestions in the event form come from a Photon
+    # (OpenStreetMap) geocoder; an empty URL turns them off. `near` biases
+    # results toward a lat/lon, and lookups are limited per client IP per
+    # minute to respect the upstream's fair-use policy.
+    address_search_url: str = "https://photon.komoot.io/api/"
+    address_search_near: tuple[float, float] | None = None
+    address_search_rate_limit_max: int = 60
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -58,6 +65,13 @@ class Settings:
             login_rate_limit_window_seconds=int(
                 os.environ.get("LOGIN_RATE_LIMIT_WINDOW_SECONDS", "900")
             ),
+            address_search_url=os.environ.get(
+                "ADDRESS_SEARCH_URL", "https://photon.komoot.io/api/"
+            ).strip(),
+            address_search_near=_lat_lon(os.environ.get("ADDRESS_SEARCH_NEAR")),
+            address_search_rate_limit_max=int(
+                os.environ.get("ADDRESS_SEARCH_RATE_LIMIT_MAX", "60")
+            ),
             host=os.environ.get("HOST", "127.0.0.1"),
             port=int(os.environ.get("PORT", "8000")),
             materialization_past_days=int(
@@ -72,3 +86,17 @@ class Settings:
                 if origin.strip()
             ),
         )
+
+
+def _lat_lon(value: str | None) -> tuple[float, float] | None:
+    if not value or not value.strip():
+        return None
+    try:
+        lat, lon = (float(part) for part in value.split(","))
+    except ValueError:
+        raise ValueError(
+            f"ADDRESS_SEARCH_NEAR must be 'latitude,longitude', got {value!r}"
+        ) from None
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        raise ValueError(f"ADDRESS_SEARCH_NEAR is out of range: {value!r}")
+    return lat, lon

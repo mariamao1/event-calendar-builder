@@ -52,7 +52,9 @@ current month, or select the month heading to jump directly to a month/year.
 Use **Add an event** to submit every event field, including timing, recurrence,
 location, groups/tags, and submitter contact. **Event location** is optional
 and takes a place (name and street address), an online link for a video call
-or livestream, or both. Under **Repeats**, an event can
+or livestream, or both. The street address suggests real addresses from
+OpenStreetMap as you type (arrow keys and Enter, or click, to pick one);
+picking a named place also fills the location name when it is empty. Under **Repeats**, an event can
 recur every N days; every N weeks on chosen weekdays; monthly on its date, on
 the Nth or last weekday (for example "the second Tuesday"), or on the last day
 of the month; or yearly on its date or on the Nth/last weekday of its month

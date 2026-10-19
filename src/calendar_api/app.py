@@ -21,6 +21,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 
 from . import ical
+from .address_search import AddressSearch, AddressSearchUnavailable
 from . import service as postgres_service
 from . import sqlite_service
 from .config import Settings
@@ -172,6 +173,9 @@ def create_app(
     app.state.settings = settings
     app.state.sessions = sessions
     app.state.rate_limiter = limiter
+    app.state.address_search = AddressSearch(
+        settings.address_search_url, near=settings.address_search_near
+    )
     if settings.cors_origins:
         app.add_middleware(
             CORSMiddleware,
@@ -635,6 +639,36 @@ def create_app(
         )
         with database.connection() as connection:
             return service.get_editable_event(connection, event_id)
+
+    @app.get("/api/v1/address-suggestions", dependencies=[link])
+    def address_suggestions(request: Request, q: str = "") -> dict:
+        """Street-address suggestions for the event form, from OpenStreetMap.
+
+        Queries shorter than three characters return no items without an
+        upstream call. Lookups are rate limited per client IP; when the
+        geocoder is unreachable the form simply keeps free-text entry.
+        """
+        address_search: AddressSearch = app.state.address_search
+        if not address_search.enabled:
+            raise NotFoundError("address suggestions are turned off")
+        if len(" ".join(q.split())) < 3:
+            return {"items": []}
+        enforce_rate_limit(
+            request,
+            scope="address",
+            limit=settings.address_search_rate_limit_max,
+            window_seconds=60,
+        )
+        try:
+            items = address_search.suggest(q)
+        except AddressSearchUnavailable as exc:
+            logger.warning("address search unavailable: %s", exc)
+            raise ApiError(
+                503,
+                "address_search_unavailable",
+                "address suggestions are unavailable right now",
+            ) from exc
+        return {"items": items}
 
     @app.get("/api/v1/events/{event_id}", dependencies=[link])
     def event(event_id: UUID, occurrence: UUID | None = None) -> dict:

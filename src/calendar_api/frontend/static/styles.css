@@ -1194,6 +1194,65 @@ dialog::backdrop {
   line-height: 1.45;
 }
 
+.address-combobox {
+  position: relative;
+}
+
+.address-suggestions {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 4px);
+  left: 0;
+  width: max(100%, 280px);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: var(--shadow);
+}
+
+.address-suggestions[hidden] {
+  display: none;
+}
+
+.address-suggestions ul {
+  max-height: 240px;
+  margin: 0;
+  padding: 4px;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.address-option {
+  display: grid;
+  gap: 1px;
+  padding: 7px 9px;
+  border-radius: 7px;
+  color: var(--ink);
+  font-size: 0.78rem;
+  font-weight: 500;
+  line-height: 1.35;
+  cursor: pointer;
+}
+
+.address-option:hover,
+.address-option[aria-selected="true"] {
+  background: var(--forest-soft);
+}
+
+.address-option-name {
+  font-weight: 800;
+}
+
+.address-attribution {
+  margin: 0;
+  padding: 5px 10px 6px;
+  border-top: 1px solid var(--soft-line);
+  color: var(--muted);
+  font-size: 0.62rem;
+  font-weight: 500;
+}
+
 .check-row {
   display: flex;
   gap: 9px;

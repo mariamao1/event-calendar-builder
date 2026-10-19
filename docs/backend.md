@@ -121,6 +121,7 @@ Public routes:
 | `GET` | `/api/v1/events/{event_id}/ics` | One published event as an iCalendar (`.ics`) download; `?occurrence=` exports only that date |
 | `GET` | `/api/v1/events/{event_id}/google` | `303` redirect to Google Calendar's add-event page; `?occurrence=` adds only that date |
 | `GET` | `/api/v1/calendar.ics` | Published occurrences as a subscribable iCalendar feed |
+| `GET` | `/api/v1/address-suggestions` | Street-address suggestions for the event form (`?q=`); see below |
 | `POST` | `/api/v1/events` | Submit revision 1 for review |
 | `GET` | `/api/v1/events/{event_id}/manage` | Load creator-owned editable content |
 | `POST` | `/api/v1/events/{event_id}/revisions` | Submit a creator-owned edit for review (or a scoped edit; see below) |
@@ -212,6 +213,27 @@ published content is exported.
   `X-WR-CALNAME` and asks clients to refresh hourly
   (`REFRESH-INTERVAL`/`X-PUBLISHED-TTL`). A subscription URL embeds the link
   token, so it grants the same read access as the calendar link.
+
+## Address suggestions
+
+`GET /api/v1/address-suggestions?q=10%20Grand%20Army` returns up to five
+`{name, address, label}` items for the event form's street-address field.
+`address` is one line (street, city, state and postcode, country); `name` is
+the venue for named places (a library, a park), else `null`. Several venues in
+one building collapse to Photon's top-ranked match.
+
+Suggestions come from [Photon](https://photon.komoot.io), an OpenStreetMap
+geocoder, called by this server so submitters' IPs never reach it. The route
+is gated by the calendar link token. Queries under three characters return no
+items without an upstream call; lookups are cached per normalized query and
+limited to `ADDRESS_SEARCH_RATE_LIMIT_MAX` (default 60) per client IP per
+minute (`429` with `Retry-After` beyond that). An unreachable geocoder
+(3-second timeout) answers `503 address_search_unavailable`, and the form keeps
+plain typing. `ADDRESS_SEARCH_URL` points at the Photon `/api/` endpoint — the
+public instance by default, or a self-hosted one for heavy use, since the
+public instance is fair-use only; set it empty to turn suggestions off (`404`).
+`ADDRESS_SEARCH_NEAR=latitude,longitude` ranks results near your community
+first.
 
 ## Scoped edits and removals of recurring events
 
