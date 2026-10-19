@@ -155,6 +155,7 @@ def _insert_revision(
         "description": payload.description,
         "location_name": payload.location_name or None,
         "location_address": payload.location_address or None,
+        "virtual_url": payload.virtual_url or None,
         "event_url": payload.event_url or None,
         "is_all_day": payload.is_all_day,
         "starts_at": payload.starts_at,
@@ -171,14 +172,14 @@ def _insert_revision(
         """
         INSERT INTO event_revisions (
           event_id, revision_number, supersedes_revision_id,
-          title, description, location_name, location_address, event_url,
-          is_all_day, starts_at, ends_at, start_date, end_date, timezone,
-          recurrence_rule, submitted_by_name, submitted_by_channel,
+          title, description, location_name, location_address, virtual_url,
+          event_url, is_all_day, starts_at, ends_at, start_date, end_date,
+          timezone, recurrence_rule, submitted_by_name, submitted_by_channel,
           submitted_by_contact
         ) VALUES (
           %(event_id)s, %(revision_number)s, %(supersedes_revision_id)s,
           %(title)s, %(description)s, %(location_name)s, %(location_address)s,
-          %(event_url)s, %(is_all_day)s, %(starts_at)s, %(ends_at)s,
+          %(virtual_url)s, %(event_url)s, %(is_all_day)s, %(starts_at)s, %(ends_at)s,
           %(start_date)s, %(end_date)s, %(timezone)s, %(recurrence_rule)s,
           %(submitted_by_name)s, %(submitted_by_channel)s,
           %(submitted_by_contact)s
@@ -266,7 +267,8 @@ def get_editable_event(connection: Connection, event_id: UUID) -> dict:
         """
         SELECT r.id AS revision_id, r.event_id, r.revision_number,
                r.approval_status, r.title, r.description, r.location_name,
-               r.location_address, r.event_url, r.is_all_day, r.starts_at,
+               r.location_address, r.virtual_url, r.event_url, r.is_all_day,
+               r.starts_at,
                r.ends_at, r.start_date, r.end_date, r.timezone,
                r.recurrence_rule, r.submitted_by_name, r.submitted_by_channel,
                r.submitted_by_contact, r.submitted_at,
@@ -325,6 +327,7 @@ def create_revision(
               title = %(title)s, description = %(description)s,
               location_name = %(location_name)s,
               location_address = %(location_address)s,
+              virtual_url = %(virtual_url)s,
               event_url = %(event_url)s, is_all_day = %(is_all_day)s,
               starts_at = %(starts_at)s, ends_at = %(ends_at)s,
               start_date = %(start_date)s, end_date = %(end_date)s,
@@ -342,6 +345,7 @@ def create_revision(
                 "description": payload.description,
                 "location_name": payload.location_name or None,
                 "location_address": payload.location_address or None,
+                "virtual_url": payload.virtual_url or None,
                 "event_url": payload.event_url or None,
                 "is_all_day": payload.is_all_day,
                 "starts_at": payload.starts_at,
@@ -1097,6 +1101,7 @@ _SEARCH_FIELDS = (
     ("description", "r.description"),
     ("location_name", "r.location_name"),
     ("location_address", "r.location_address"),
+    ("virtual_url", "r.virtual_url"),
 )
 
 
@@ -1164,7 +1169,7 @@ def calendar_occurrences(
           o.timezone, o.content_override, o.instance_cancelled,
           e.cancelled_at IS NOT NULL AS is_cancelled,
           r.id AS revision_id, r.title, r.description, r.location_name,
-          r.location_address, r.event_url, r.recurrence_rule,
+          r.location_address, r.virtual_url, r.event_url, r.recurrence_rule,
           grouped.groups
         FROM event_occurrences o
         JOIN events e ON e.id = o.event_id
@@ -1424,6 +1429,7 @@ def get_published_event(
                         "description",
                         "location_name",
                         "location_address",
+                        "virtual_url",
                         "event_url",
                     )
                 }
@@ -1778,6 +1784,7 @@ def _synth_values(
     description: str,
     location_name: str | None,
     location_address: str | None,
+    virtual_url: str | None,
     event_url: str | None,
     is_all_day: bool,
     starts_at: datetime | None,
@@ -1797,6 +1804,7 @@ def _synth_values(
         "description": description,
         "location_name": location_name,
         "location_address": location_address,
+        "virtual_url": virtual_url,
         "event_url": event_url,
         "is_all_day": is_all_day,
         "starts_at": starts_at.isoformat() if starts_at else None,
@@ -1837,14 +1845,16 @@ def _insert_approved_revision(
         INSERT INTO event_revisions (
           event_id, revision_number, supersedes_revision_id,
           approval_status, title, description, location_name, location_address,
-          event_url, is_all_day, starts_at, ends_at, start_date, end_date,
-          timezone, recurrence_rule, submitted_by_name, submitted_by_channel,
-          submitted_by_contact, submitted_at, reviewed_at, reviewed_by,
+          virtual_url, event_url, is_all_day, starts_at, ends_at, start_date,
+          end_date, timezone, recurrence_rule, submitted_by_name,
+          submitted_by_channel, submitted_by_contact, submitted_at, reviewed_at,
+          reviewed_by,
           review_note
         ) VALUES (
           %(event_id)s, %(revision_number)s, %(supersedes_revision_id)s,
           'approved', %(title)s, %(description)s, %(location_name)s,
-          %(location_address)s, %(event_url)s, %(is_all_day)s, %(starts_at)s,
+          %(location_address)s, %(virtual_url)s, %(event_url)s,
+          %(is_all_day)s, %(starts_at)s,
           %(ends_at)s, %(start_date)s, %(end_date)s, %(timezone)s,
           %(recurrence_rule)s, %(submitted_by_name)s, %(submitted_by_channel)s,
           %(submitted_by_contact)s, %(now)s, %(now)s, %(actor)s, %(note)s
@@ -1859,6 +1869,7 @@ def _insert_approved_revision(
             "description": validated.description,
             "location_name": validated.location_name or None,
             "location_address": validated.location_address or None,
+            "virtual_url": validated.virtual_url or None,
             "event_url": validated.event_url or None,
             "is_all_day": validated.is_all_day,
             "starts_at": validated.starts_at,
@@ -2185,6 +2196,7 @@ def edit_future_occurrences(
             description=payload.description,
             location_name=payload.location_name,
             location_address=payload.location_address,
+            virtual_url=payload.virtual_url,
             event_url=payload.event_url,
             is_all_day=payload.is_all_day,
             starts_at=new_starts_at,
@@ -2299,6 +2311,7 @@ def _commit_truncation(
             description=revision["description"],
             location_name=revision["location_name"],
             location_address=revision["location_address"],
+            virtual_url=revision["virtual_url"],
             event_url=revision["event_url"],
             is_all_day=bool(revision["is_all_day"]),
             starts_at=revision["starts_at"],

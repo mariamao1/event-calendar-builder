@@ -787,6 +787,12 @@ dialog::backdrop {
   display: none;
 }
 
+.online-link {
+  color: var(--forest);
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
 .compact-dialog {
   padding: 20px;
 }

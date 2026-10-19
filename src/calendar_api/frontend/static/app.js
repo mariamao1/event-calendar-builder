@@ -1361,7 +1361,8 @@ function openDayDialog(key) {
     appendRepeatIcon(title, event);
     const meta = document.createElement("span");
     meta.className = "day-card-meta";
-    const location = event.location_name ? ` · ${event.location_name}` : "";
+    const place = event.location_name || (event.virtual_url ? "Online" : "");
+    const location = place ? ` · ${place}` : "";
     meta.textContent = `${event.is_cancelled ? "Cancelled · " : ""}${dayEventMeta(event, key)}${location}`;
     copy.append(title, meta);
     appendGroupTags(copy, event);
@@ -1452,6 +1453,20 @@ function safeEventUrl(value) {
     // Missing or malformed URLs are simply not linked.
   }
   return null;
+}
+
+// "Online" detail row: a join link naming its host, so viewers can tell a
+// video call from a livestream before leaving the calendar.
+function onlineLinkRow(value) {
+  const href = safeEventUrl(value);
+  if (!href) return null;
+  const link = document.createElement("a");
+  link.className = "online-link";
+  link.href = href;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.textContent = `Join online (${new URL(href).host})`;
+  return metaRow("Online", link);
 }
 
 const WEEKDAY_CODES = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
@@ -1870,6 +1885,8 @@ function renderEventDetail(view) {
   rows.push(...eventTimezoneRows(event, view.timing || event));
   const location = [shown("location_name"), shown("location_address")].filter(Boolean).join(" · ");
   if (location) rows.push(metaRow("Where", location));
+  const online = onlineLinkRow(shown("virtual_url"));
+  if (online) rows.push(online);
   if (event.groups?.length) rows.push(metaRow(event.groups.length === 1 ? "Group" : "Groups", groupPills(event.groups)));
   meta.replaceChildren(...rows);
   meta.hidden = false;
@@ -3167,6 +3184,7 @@ function populateEventForm(event) {
   document.querySelector("#event-description").value = event.description || "";
   document.querySelector("#event-location-name").value = event.location_name || "";
   document.querySelector("#event-location-address").value = event.location_address || "";
+  document.querySelector("#event-virtual-url").value = event.virtual_url || "";
   document.querySelector("#event-url").value = event.event_url || "";
   document.querySelector("#event-all-day").checked = event.is_all_day;
   timezoneOptions(event.timezone || state.timezone);
@@ -3243,6 +3261,7 @@ function applyScopedPrefill(series) {
     document.querySelector("#event-description").value = timing.description || "";
     document.querySelector("#event-location-name").value = timing.location_name || "";
     document.querySelector("#event-location-address").value = timing.location_address || "";
+    document.querySelector("#event-virtual-url").value = timing.virtual_url || "";
     document.querySelector("#event-url").value = timing.event_url || "";
   }
   const timezone = series.timezone || state.timezone;
@@ -3289,6 +3308,7 @@ function buildEventPayload() {
     description: document.querySelector("#event-description").value,
     location_name: document.querySelector("#event-location-name").value.trim() || null,
     location_address: document.querySelector("#event-location-address").value.trim() || null,
+    virtual_url: document.querySelector("#event-virtual-url").value.trim() || null,
     event_url: document.querySelector("#event-url").value.trim() || null,
     is_all_day: allDay,
     timezone,
@@ -3302,15 +3322,9 @@ function buildEventPayload() {
     },
   };
 
-  if (payload.event_url) {
-    let url;
-    try {
-      url = new URL(payload.event_url);
-    } catch (_) {
-      throw new Error("Event website must be a complete http(s) URL.");
-    }
-    if (!["http:", "https:"].includes(url.protocol)) {
-      throw new Error("Event website must be a complete http(s) URL.");
+  for (const [field, label] of [["event_url", "Event website"], ["virtual_url", "Online link"]]) {
+    if (payload[field] && !safeEventUrl(payload[field])) {
+      throw new Error(`${label} must be a complete http(s) URL.`);
     }
   }
 
@@ -3719,6 +3733,8 @@ function renderReviewDetail(detail, revision) {
     .filter(Boolean)
     .join(" · ");
   if (location) rows.push(metaRow("Where", location));
+  const online = onlineLinkRow(revision.virtual_url);
+  if (online) rows.push(online);
   if (revision.timezone && !revision.is_all_day) {
     rows.push(metaRow("Timezone", String(revision.timezone).replaceAll("_", " ")));
   }

@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS event_revisions (
   description TEXT NOT NULL DEFAULT '',
   location_name TEXT,
   location_address TEXT,
+  virtual_url TEXT,
   event_url TEXT,
   is_all_day INTEGER NOT NULL CHECK (is_all_day IN (0, 1)),
   starts_at TEXT,
@@ -110,8 +111,8 @@ CREATE TABLE IF NOT EXISTS event_occurrences (
   cancellation_reason TEXT,
   -- Per-occurrence divergence from the published series, set by scoped
   -- single/future edits. content_override is a JSON object with any subset
-  -- of {title, description, location_name, location_address, event_url};
-  -- readers merge it over the published revision. instance_cancelled marks
+  -- of {title, description, location_name, location_address, virtual_url,
+  -- event_url}; readers merge it over the published revision. instance_cancelled marks
   -- a scoped cancellation: the date stays visible, flagged as cancelled.
   -- A later series-wide edit clears both, so the latest series change wins.
   content_override TEXT,

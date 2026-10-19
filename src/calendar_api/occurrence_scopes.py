@@ -14,6 +14,7 @@ CONTENT_OVERRIDE_FIELDS = (
     "description",
     "location_name",
     "location_address",
+    "virtual_url",
     "event_url",
 )
 

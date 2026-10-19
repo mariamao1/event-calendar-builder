@@ -780,7 +780,7 @@ def create_app(
             start_date=item.get("start_date"),
             end_date=item.get("end_date"),
             is_all_day=bool(item["is_all_day"]),
-            description=item.get("description") or "",
+            description=ical.description_text(item),
             location=ical.location_text(item),
             timezone=detail["timezone"] if repeating else None,
             recurrence_rule=detail.get("recurrence_rule") if repeating else None,

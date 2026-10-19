@@ -18,6 +18,7 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/004_event_cancellation.
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/005_occurrence_overrides.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/006_occurrence_exceptions.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/007_group_management.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/008_event_virtual_link.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/tests/001_initial_schema_smoke.sql
 ```
 
@@ -49,7 +50,9 @@ dialog. Use the arrows to move one month at a time, **Today** to return to the
 current month, or select the month heading to jump directly to a month/year.
 
 Use **Add an event** to submit every event field, including timing, recurrence,
-location, groups/tags, and submitter contact. Under **Repeats**, an event can
+location, groups/tags, and submitter contact. **Event location** is optional
+and takes a place (name and street address), an online link for a video call
+or livestream, or both. Under **Repeats**, an event can
 recur every N days; every N weeks on chosen weekdays; monthly on its date, on
 the Nth or last weekday (for example "the second Tuesday"), or on the last day
 of the month; or yearly on its date or on the Nth/last weekday of its month
@@ -76,8 +79,10 @@ a keyboard, the month grid is a single tab stop: the arrow keys move by day or
 week, Home/End jump to the week's ends, Page Up/Down change month (with Shift,
 year), and Enter lists the day's events. Alt+←/→ steps the current view.
 
-Select any event to open its detail view: the full schedule, location,
-description, website, and groups/tags. Repeating events also show the series in
+Select any event to open its detail view: the full schedule, location, a
+**Join online** link for events with an online link, description, website, and
+groups/tags. Calendar exports carry the online link too (as the location of an
+online-only event, and as a "Join online" line in the description). Repeating events also show the series in
 plain language (for example "Every week on Tuesday · 12 times"), added and
 skipped dates, previous/next date navigation, and the upcoming dates. Viewers
 can copy a link to the event, and its creator can edit it. Editing, cancelling,

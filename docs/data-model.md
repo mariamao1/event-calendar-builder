@@ -26,6 +26,9 @@ not depend on a user account.
 The event's moderation state is
 `events.current_revision_id -> event_revisions.approval_status`. Group
 associations, timing, descriptive content, and recurrence are all revisioned.
+Descriptive content includes an optional event location: a physical place
+(`location_name`, `location_address`), an online link (`virtual_url`, an
+absolute http(s) URL), both, or neither.
 That prevents an edit from bypassing review.
 
 An edit always creates a new `pending` revision and moves
@@ -88,7 +91,7 @@ occurrence row across approved edits.
 Scoped single/future edits diverge individual occurrences from the published
 series. `event_occurrences.content_override` holds a JSON object with any
 subset of the descriptive fields (`title`, `description`, `location_name`,
-`location_address`, `event_url`); reads merge it over the published revision
+`location_address`, `virtual_url`, `event_url`); reads merge it over the published revision
 and report diverged dates via `has_override`. Timing divergence reuses the
 per-occurrence start/end columns with `is_exception`. A scoped cancellation
 sets `event_occurrences.instance_cancelled` instead: the date stays visible,

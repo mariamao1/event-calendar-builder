@@ -393,11 +393,19 @@
             <div class="form-section-body">
               <label class="field-label field-wide"><span class="field-heading">Title <span aria-hidden="true">*</span></span><input id="event-title" maxlength="240" required /></label>
               <label class="field-label field-wide">Description<textarea id="event-description" maxlength="20000" rows="5"></textarea></label>
+              <label class="field-label field-wide">Event website<input id="event-url" type="url" maxlength="2000" placeholder="https://…" /></label>
+            </div>
+          </fieldset>
+
+          <fieldset class="form-section">
+            <legend>Event location <span class="optional-label">optional</span></legend>
+            <div class="form-section-body">
+              <p class="field-help">Add a place, an online link, or both.</p>
               <div class="field-grid">
                 <label class="field-label">Location name<input id="event-location-name" maxlength="240" /></label>
                 <label class="field-label">Street address<input id="event-location-address" maxlength="500" /></label>
               </div>
-              <label class="field-label field-wide">Event website<input id="event-url" type="url" maxlength="2000" placeholder="https://…" /></label>
+              <label class="field-label field-wide">Online link<input id="event-virtual-url" type="url" maxlength="2000" placeholder="https://…" /><small>A video call or livestream link for people joining remotely.</small></label>
             </div>
           </fieldset>
 

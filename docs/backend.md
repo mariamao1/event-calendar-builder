@@ -40,7 +40,8 @@ Its semantics are:
   all active groups. Unknown and inactive slugs return `422`, making frontend
   typos visible.
 - `q` (also accepted as `search`/`query`) narrows to events whose title,
-  description, or location contains every whitespace-separated token,
+  description, or location (place name, street address, or online link)
+  contains every whitespace-separated token,
   case-insensitively. Blank means no filtering. It combines with `group`
   (both apply), and per-date content edits are found by their own wording.
   `meta.search` echoes the normalized query.

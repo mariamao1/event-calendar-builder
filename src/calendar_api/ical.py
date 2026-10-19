@@ -96,16 +96,32 @@ def _wall(value: str | datetime) -> datetime:
 
 
 def location_text(item: Mapping[str, Any]) -> str:
-    return " · ".join(
+    """The physical place, or the online link for an online-only event."""
+    place = " · ".join(
         part for part in (item.get("location_name"), item.get("location_address")) if part
     )
+    return place or _http_url(item, "virtual_url") or ""
 
 
-def _event_url(item: Mapping[str, Any]) -> str | None:
-    url = (item.get("event_url") or "").strip()
+def description_text(item: Mapping[str, Any]) -> str:
+    """The description, with the online link on its own line so calendar
+    apps make it clickable even when LOCATION holds a street address."""
+    description = item.get("description") or ""
+    link = _http_url(item, "virtual_url")
+    if not link:
+        return description
+    return f"{description}\n\nJoin online: {link}" if description else f"Join online: {link}"
+
+
+def _http_url(item: Mapping[str, Any], field: str) -> str | None:
+    url = (item.get(field) or "").strip()
     if url.startswith(("http://", "https://")):
         return url
     return None
+
+
+def _event_url(item: Mapping[str, Any]) -> str | None:
+    return _http_url(item, "event_url")
 
 
 def uid(leaf: UUID | str) -> str:
@@ -127,8 +143,9 @@ def _utc_timing(item: Mapping[str, Any]) -> list[str]:
 
 def _content(item: Mapping[str, Any], *, cancelled: bool) -> list[str]:
     lines = [f"SUMMARY:{escape_text(item.get('title') or 'Untitled event')}"]
-    if item.get("description"):
-        lines.append(f"DESCRIPTION:{escape_text(item['description'])}")
+    description = description_text(item)
+    if description:
+        lines.append(f"DESCRIPTION:{escape_text(description)}")
     location = location_text(item)
     if location:
         lines.append(f"LOCATION:{escape_text(location)}")

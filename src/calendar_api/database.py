@@ -81,6 +81,14 @@ class SQLiteDatabase:
                 connection.execute("ALTER TABLE events ADD COLUMN cancelled_by TEXT")
             if "cancel_reason" not in event_columns:
                 connection.execute("ALTER TABLE events ADD COLUMN cancel_reason TEXT")
+            revision_columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(event_revisions)")
+            }
+            if "virtual_url" not in revision_columns:
+                connection.execute(
+                    "ALTER TABLE event_revisions ADD COLUMN virtual_url TEXT"
+                )
             _migrate_review_actions(connection, schema)
             _migrate_occurrence_overrides(connection)
             _migrate_groups(connection, schema)

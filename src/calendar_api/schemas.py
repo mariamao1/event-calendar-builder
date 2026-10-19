@@ -146,6 +146,9 @@ class EventRevisionInput(StrictModel):
     location_address: (
         Annotated[str, StringConstraints(strip_whitespace=True, max_length=500)] | None
     ) = None
+    virtual_url: (
+        Annotated[str, StringConstraints(strip_whitespace=True, max_length=2000)] | None
+    ) = None
     event_url: (
         Annotated[str, StringConstraints(strip_whitespace=True, max_length=2000)] | None
     ) = None
@@ -187,7 +190,7 @@ class EventRevisionInput(StrictModel):
             )
         return rule
 
-    @field_validator("event_url")
+    @field_validator("event_url", "virtual_url")
     @classmethod
     def valid_event_url(cls, value: str | None) -> str | None:
         if not value:
