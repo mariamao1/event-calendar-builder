@@ -19,6 +19,7 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/005_occurrence_override
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/006_occurrence_exceptions.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/007_group_management.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/008_event_virtual_link.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/011_user_accounts.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/tests/001_initial_schema_smoke.sql
 ```
 
@@ -64,6 +65,16 @@ schedule in plain language as you edit. Extra or skipped dates can be added on
 top. Repeating events appear on every view with a ↻ marker. Community submissions wait for
 admin approval; the confirmation includes a creator-only edit link. Signed-in
 admins create and edit events with immediate approval.
+
+Accounts are optional: anyone with the calendar link can still view and add
+events without one. **Sign in** opens a dialog where anyone holding the link
+can also **Create an account** (a username and a password of 8+ characters).
+An account is not an admin by default. Admin is an extra capability: the
+operator account configured by `ADMIN_USERNAME`/`ADMIN_PASSWORD_HASH` always
+has it, and it can be granted to registered accounts with
+`uv run calendar-api grant-admin <username>` (or by an admin via
+`PATCH /api/v1/admin/users/{id}`). Only admin accounts see the review queue
+and **Groups**.
 
 Use the **Month / Week / Day** switcher to change views. Week and day are
 time grids: timed events are positioned by their start/end times, overlapping

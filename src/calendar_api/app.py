@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import math
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Annotated, Literal
@@ -26,7 +27,7 @@ from . import service as postgres_service
 from . import sqlite_service
 from .config import Settings
 from .database import Database, SQLiteDatabase, create_database
-from .errors import ApiError, NotFoundError, ValidationError
+from .errors import ApiError, ConflictError, NotFoundError, ValidationError
 from .occurrence_scopes import CONTENT_OVERRIDE_FIELDS, apply_content_override
 from .rate_limit import RateLimiter
 from .schemas import (
@@ -34,11 +35,19 @@ from .schemas import (
     GroupCreate,
     GroupUpdate,
     LoginInput,
+    RegisterInput,
     RemovalInput,
     ReviewInput,
+    UserRoleUpdate,
     normalize_scope,
 )
-from .security import SessionStore, tokens_equal, verify_password
+from .security import (
+    SessionStore,
+    hash_password,
+    reject_password,
+    tokens_equal,
+    verify_password,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +58,27 @@ FEED_PAST_DAYS = 30
 FEED_FUTURE_MONTHS = 12
 FEED_REFRESH = timedelta(hours=1)
 FEED_PAGE_SIZE = 2000
+
+# Session subjects: the configured operator admin, or a registered account
+# by id. Roles are never stored in a session; they are read per request.
+OPERATOR_SESSION = "operator"
+USER_SESSION = "user:"
+
+
+@dataclass(frozen=True, slots=True)
+class Account:
+    """A signed-in identity. `id` is None for the configured operator."""
+
+    id: UUID | str | None
+    username: str
+    is_admin: bool
+
+    def public(self) -> dict:
+        return {
+            "id": None if self.id is None else str(self.id),
+            "username": self.username,
+            "is_admin": self.is_admin,
+        }
 
 
 def _parse_boundary(
@@ -263,37 +293,108 @@ def create_app(
                 401, "unauthorized", "a valid calendar link token is required"
             )
 
+    def bearer_token(authorization: str | None) -> str | None:
+        if authorization and authorization.lower().startswith("bearer "):
+            return authorization[7:].strip() or None
+        return None
+
+    def operator_account() -> Account:
+        return Account(id=None, username=settings.admin_username, is_admin=True)
+
+    def session_account(authorization: str | None) -> Account | None:
+        """The signed-in account behind a bearer session, if any.
+
+        Registered accounts are re-read on every request, so a deleted
+        account or a revoked admin role takes effect on existing sessions.
+        """
+        subject = sessions.validate(bearer_token(authorization))
+        if subject is None:
+            return None
+        if subject == OPERATOR_SESSION:
+            return operator_account()
+        with database.connection() as connection:
+            user = service.get_user(connection, subject.removeprefix(USER_SESSION))
+        if user is None:
+            return None
+        return Account(id=user["id"], username=user["username"], is_admin=user["is_admin"])
+
     def admin_identity(
         x_admin_key: str | None, authorization: str | None
     ) -> str | None:
-        bearer: str | None = None
-        if authorization and authorization.lower().startswith("bearer "):
-            bearer = authorization[7:].strip() or None
-        if bearer:
-            username = sessions.validate(bearer)
-            if username is not None:
-                return username
+        """The acting admin's username; plain accounts are never admins."""
+        account = session_account(authorization)
+        if account is not None and account.is_admin:
+            return account.username
         expected = settings.admin_api_key
         if expected and tokens_equal(x_admin_key, expected):
             return settings.admin_username
         return None
+
+    def admin_login_configured() -> bool:
+        """Whether any admin can sign in with a password."""
+        if settings.admin_password_hash:
+            return True
+        with database.connection() as connection:
+            return service.has_admin_user(connection)
+
+    def admin_configured() -> bool:
+        return bool(settings.admin_api_key) or admin_login_configured()
+
+    def authenticate(username: str, password: str) -> Account | None:
+        """Check a username/password against the operator, then accounts."""
+        if (
+            settings.admin_password_hash
+            and tokens_equal(username, settings.admin_username)
+            and verify_password(password, settings.admin_password_hash)
+        ):
+            return operator_account()
+        with database.connection() as connection:
+            user = service.get_user_credentials(connection, username)
+        if user is None:
+            reject_password(password)
+            return None
+        if not verify_password(password, user["password_hash"]):
+            return None
+        return Account(id=user["id"], username=user["username"], is_admin=user["is_admin"])
+
+    def start_session(account: Account) -> dict:
+        subject = OPERATOR_SESSION if account.id is None else f"{USER_SESSION}{account.id}"
+        token, expires_at = sessions.create(
+            subject, ttl_seconds=settings.admin_session_ttl_seconds
+        )
+        return {
+            "token": token,
+            "token_type": "bearer",
+            **account.public(),
+            "expires_at": datetime.fromtimestamp(expires_at, UTC).isoformat(),
+        }
+
+    def limit_logins(request: Request) -> None:
+        enforce_rate_limit(
+            request,
+            scope="login",
+            limit=settings.login_rate_limit_max,
+            window_seconds=settings.login_rate_limit_window_seconds,
+        )
 
     def require_admin(
         request: Request,
         x_admin_key: Annotated[str | None, Header()] = None,
         authorization: Annotated[str | None, Header()] = None,
     ) -> str:
-        """Require real admin authentication: a login session or the API key.
+        """Require an admin: a signed-in admin account or the API key.
 
-        Sessions come from POST /api/v1/admin/login (password verified
-        against a salted PBKDF2 hash). The X-Admin-Key service key remains
-        accepted so existing operators keep working.
+        Sessions come from POST /api/v1/auth/login (or /admin/login); only
+        accounts with admin access pass, so being signed in is not enough.
+        The X-Admin-Key service key remains accepted so existing operators
+        keep working.
         """
         identity = admin_identity(x_admin_key, authorization)
         if identity is not None:
             return identity
-        expected = settings.admin_api_key
-        if not expected and not settings.admin_password_hash:
+        if session_account(authorization) is not None:
+            raise ApiError(403, "forbidden", "this account does not have admin access")
+        if not admin_configured():
             raise ApiError(
                 503,
                 "admin_not_configured",
@@ -384,51 +485,105 @@ def create_app(
         # The calendar is private to its link: ask every crawler to stay out.
         return PlainTextResponse("User-agent: *\nDisallow: /\n")
 
-    @app.post("/api/v1/admin/login")
-    def admin_login(payload: LoginInput, request: Request) -> dict:
-        """Authenticate with username + password and receive a session token.
+    @app.post(
+        "/api/v1/auth/register",
+        status_code=status.HTTP_201_CREATED,
+        dependencies=[link],
+    )
+    def register(payload: RegisterInput, request: Request) -> dict:
+        """Create an account for anyone holding the calendar link.
 
-        Passwords are verified against the salted PBKDF2 hash in
-        ADMIN_PASSWORD_HASH using a constant-time comparison. Attempts are
-        rate limited per client IP to slow down credential guessing.
+        New accounts are signed in right away and never start as admins.
+        Registrations are rate limited per client IP. The configured
+        operator username is reserved.
         """
         enforce_rate_limit(
             request,
-            scope="login",
-            limit=settings.login_rate_limit_max,
-            window_seconds=settings.login_rate_limit_window_seconds,
+            scope="register",
+            limit=settings.register_rate_limit_max,
+            window_seconds=settings.register_rate_limit_window_seconds,
         )
-        if not settings.admin_password_hash:
+        if payload.username.casefold() == settings.admin_username.casefold():
+            raise ConflictError(f"username '{payload.username}' is already taken")
+        password_hash = hash_password(payload.password)
+        with database.transaction() as connection:
+            user = service.create_user(connection, payload.username, password_hash)
+        return start_session(
+            Account(id=user["id"], username=user["username"], is_admin=False)
+        )
+
+    @app.post("/api/v1/auth/login")
+    def login(payload: LoginInput, request: Request) -> dict:
+        """Sign in with username + password and receive a session token.
+
+        Works for every account; the response says whether it has admin
+        access. Passwords are checked against salted PBKDF2 hashes in
+        constant time, and attempts are rate limited per client IP.
+        """
+        limit_logins(request)
+        account = authenticate(payload.username, payload.password)
+        if account is None:
+            raise ApiError(401, "unauthorized", "invalid username or password")
+        return start_session(account)
+
+    @app.post("/api/v1/auth/logout")
+    def logout(authorization: Annotated[str | None, Header()] = None) -> dict:
+        """Revoke the calling session token, if one was sent."""
+        return {"revoked": sessions.revoke(bearer_token(authorization))}
+
+    @app.get("/api/v1/auth/me")
+    def me(authorization: Annotated[str | None, Header()] = None) -> dict:
+        """The signed-in account and whether it has admin access."""
+        account = session_account(authorization)
+        if account is None:
+            raise ApiError(401, "unauthorized", "sign in to continue")
+        return account.public()
+
+    @app.post("/api/v1/admin/login")
+    def admin_login(payload: LoginInput, request: Request) -> dict:
+        """Sign in, but only issue a session to accounts with admin access."""
+        limit_logins(request)
+        if not admin_login_configured():
             raise ApiError(
                 503,
                 "admin_not_configured",
-                "ADMIN_PASSWORD_HASH is not configured",
+                "no admin account or ADMIN_PASSWORD_HASH is configured",
             )
-        username_ok = tokens_equal(payload.username, settings.admin_username)
-        password_ok = verify_password(
-            payload.password, settings.admin_password_hash
-        )
-        if not (username_ok and password_ok):
+        account = authenticate(payload.username, payload.password)
+        if account is None:
             raise ApiError(401, "unauthorized", "invalid username or password")
-        token, expires_at = sessions.create(
-            settings.admin_username,
-            ttl_seconds=settings.admin_session_ttl_seconds,
-        )
-        return {
-            "token": token,
-            "token_type": "bearer",
-            "username": settings.admin_username,
-            "expires_at": datetime.fromtimestamp(expires_at, UTC).isoformat(),
-        }
+        if not account.is_admin:
+            raise ApiError(403, "forbidden", "this account does not have admin access")
+        return start_session(account)
 
     @app.post("/api/v1/admin/logout", dependencies=[admin])
-    def admin_logout(request: Request) -> dict:
+    def admin_logout(authorization: Annotated[str | None, Header()] = None) -> dict:
         """Revoke the calling admin session token, if one was used."""
-        authorization = request.headers.get("authorization", "")
-        bearer: str | None = None
-        if authorization.lower().startswith("bearer "):
-            bearer = authorization[7:].strip() or None
-        return {"revoked": sessions.revoke(bearer)}
+        return {"revoked": sessions.revoke(bearer_token(authorization))}
+
+    @app.get("/api/v1/admin/users", dependencies=[admin])
+    def admin_users() -> dict:
+        with database.connection() as connection:
+            return {"items": service.list_users(connection)}
+
+    @app.patch("/api/v1/admin/users/{user_id}")
+    def update_user_role(
+        user_id: UUID,
+        payload: UserRoleUpdate,
+        actor: str = Depends(require_admin),
+    ) -> dict:
+        """Grant or revoke admin access for an account.
+
+        Admins cannot remove their own admin access, so a calendar is never
+        left without the admin who made the change.
+        """
+        with database.transaction() as connection:
+            user = service.get_user(connection, user_id)
+            if user is None:
+                raise NotFoundError("user not found")
+            if not payload.is_admin and user["username"].casefold() == actor.casefold():
+                raise ConflictError("you cannot remove your own admin access")
+            return service.set_user_admin(connection, user_id, payload.is_admin)
 
     @app.get("/api/v1/groups", dependencies=[link])
     def groups() -> dict:

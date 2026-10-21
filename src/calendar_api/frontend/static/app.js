@@ -2467,7 +2467,7 @@ function jumpYear(offset) {
 const eventFormDialog = document.querySelector("#event-form-dialog");
 const eventForm = document.querySelector("#event-form");
 const eventFormSuccess = document.querySelector("#event-form-success");
-const adminDialog = document.querySelector("#admin-dialog");
+const accountDialog = document.querySelector("#account-dialog");
 const reviewQueueDialog = document.querySelector("#review-queue-dialog");
 const reviewQueueList = document.querySelector("#review-queue-list");
 const reviewQueueError = document.querySelector("#review-queue-error");
@@ -2501,8 +2501,20 @@ function safeSessionRemove(key) {
   }
 }
 
+// Any account can sign in; only an admin account's session unlocks admin
+// tools. Plain accounts keep using per-event management links for edits.
+function sessionToken() {
+  return safeSessionGet("calendar-session-token");
+}
+
 function adminToken() {
-  return safeSessionGet("calendar-admin-token");
+  return safeSessionGet("calendar-session-admin") === "true" ? sessionToken() : null;
+}
+
+function rememberSession(account, token = sessionToken()) {
+  safeSessionSet("calendar-session-token", token);
+  safeSessionSet("calendar-session-name", account.username);
+  safeSessionSet("calendar-session-admin", String(Boolean(account.is_admin)));
 }
 
 function isAdminSignedIn() {
@@ -3561,7 +3573,9 @@ async function submitEventForm(event) {
     }
   } catch (error) {
     if (error.status === 401 && isAdminSignedIn()) {
-      signOutAdmin();
+      signOut();
+    } else if (error.status === 403) {
+      refreshAccount();
     }
     setEventFormError(error.message);
   } finally {
@@ -3578,69 +3592,116 @@ function updateSubmitterContactType() {
   input.placeholder = sms ? "+12125550123" : "name@example.org";
 }
 
-function updateAdminUi() {
-  const signedIn = isAdminSignedIn();
-  const name = safeSessionGet("calendar-admin-name") || "admin";
-  document.querySelector("#admin-button").textContent = signedIn ? `Admin: ${name}` : "Admin sign in";
-  document.querySelector("#admin-login-form").hidden = signedIn;
-  document.querySelector("#admin-signed-in").hidden = !signedIn;
-  document.querySelector("#admin-name").textContent = name;
-  document.querySelector("#manage-groups-button").hidden = !signedIn;
-  if (signedIn) {
+let accountMode = "signin";
+
+function setAccountMode(mode) {
+  accountMode = mode;
+  const registering = mode === "register";
+  document.querySelector("#account-dialog-title").textContent = registering ? "Create an account" : "Sign in";
+  document.querySelector("#account-submit").textContent = registering ? "Create account" : "Sign in";
+  document.querySelector("#account-switch-prompt").textContent = registering ? "Already have an account?" : "New here?";
+  document.querySelector("#account-mode-toggle").textContent = registering ? "Sign in instead" : "Create an account";
+  document.querySelector("#account-username-hint").hidden = !registering;
+  document.querySelector("#account-password-hint").hidden = !registering;
+  const password = document.querySelector("#account-password");
+  password.autocomplete = registering ? "new-password" : "current-password";
+  password.minLength = registering ? 8 : 0;
+  document.querySelector("#account-error").textContent = "";
+}
+
+function updateAccountUi() {
+  const signedIn = Boolean(sessionToken());
+  const admin = isAdminSignedIn();
+  const name = safeSessionGet("calendar-session-name") || "";
+  const button = document.querySelector("#account-button");
+  button.textContent = !signedIn ? "Sign in" : admin ? `Admin: ${name}` : name;
+  if (!signedIn) setAccountMode(accountMode);
+  else document.querySelector("#account-dialog-title").textContent = "Your account";
+  document.querySelector("#account-form").hidden = signedIn;
+  document.querySelector("#account-signed-in").hidden = !signedIn;
+  document.querySelector("#account-name").textContent = name;
+  document.querySelector("#account-admin-note").hidden = !admin;
+  document.querySelector("#manage-groups-button").hidden = !admin;
+  if (admin) {
     updateReviewQueueButton();
     refreshReviewQueue();
   } else {
     reviewQueueItems = [];
     updateReviewQueueButton();
+    closeAdminDialogs();
   }
 }
 
-async function adminLogin(event) {
+async function submitAccountForm(event) {
   event.preventDefault();
-  const error = document.querySelector("#admin-error");
+  const error = document.querySelector("#account-error");
   error.textContent = "";
+  const path = accountMode === "register"
+    ? urlWithAccessToken("/api/v1/auth/register")
+    : "/api/v1/auth/login";
   try {
-    const result = await jsonRequest("/api/v1/admin/login", {
+    const result = await jsonRequest(path, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
       body: JSON.stringify({
-        username: document.querySelector("#admin-username").value,
-        password: document.querySelector("#admin-password").value,
+        username: document.querySelector("#account-username").value.trim(),
+        password: document.querySelector("#account-password").value,
       }),
     });
-    safeSessionSet("calendar-admin-token", result.token);
-    safeSessionSet("calendar-admin-name", result.username);
-    document.querySelector("#admin-password").value = "";
-    updateAdminUi();
-  } catch (loginError) {
-    error.textContent = loginError.message;
+    rememberSession(result, result.token);
+    document.querySelector("#account-password").value = "";
+    accountMode = "signin";
+    updateAccountUi();
+  } catch (accountError) {
+    error.textContent = accountError.message;
   }
 }
 
-async function adminLogout() {
-  const token = adminToken();
+// A stored session may have expired, or its admin access may have changed
+// since the page was opened, so the server's view wins on load.
+async function refreshAccount() {
+  const token = sessionToken();
+  if (!token) return;
+  try {
+    const account = await jsonRequest("/api/v1/auth/me", {
+      headers: { Accept: "application/json", Authorization: `Bearer ${token}` },
+    });
+    const changed = account.username !== safeSessionGet("calendar-session-name")
+      || Boolean(account.is_admin) !== isAdminSignedIn();
+    rememberSession(account, token);
+    if (changed) updateAccountUi();
+  } catch (error) {
+    if (error.status === 401) signOut();
+  }
+}
+
+async function accountLogout() {
+  const token = sessionToken();
   if (token) {
-    await fetch("/api/v1/admin/logout", {
+    await fetch("/api/v1/auth/logout", {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
     }).catch(() => null);
   }
-  signOutAdmin();
+  signOut();
 }
 
-function signOutAdmin() {
-  safeSessionRemove("calendar-admin-token");
-  safeSessionRemove("calendar-admin-name");
-  reviewQueueItems = [];
+function closeAdminDialogs() {
   reviewDetail = null;
   if (reviewQueueDialog.open) reviewQueueDialog.close();
   if (reviewDetailDialog.open) reviewDetailDialog.close();
   if (groupsDialog.open) groupsDialog.close();
-  updateAdminUi();
+}
+
+function signOut() {
+  safeSessionRemove("calendar-session-token");
+  safeSessionRemove("calendar-session-name");
+  safeSessionRemove("calendar-session-admin");
+  updateAccountUi();
 }
 
 function adminDisplayName() {
-  return safeSessionGet("calendar-admin-name") || "admin";
+  return safeSessionGet("calendar-session-name") || "admin";
 }
 
 function reviewQueueHeaders() {
@@ -3673,8 +3734,12 @@ function setReviewDetailError(message) {
 
 function handleReviewAuthError(error) {
   if (error && error.status === 401 && isAdminSignedIn()) {
-    signOutAdmin();
+    signOut();
     return "Your admin session expired. Sign in again to continue reviewing.";
+  }
+  if (error && error.status === 403) {
+    refreshAccount();
+    return "Your account no longer has admin access.";
   }
   return null;
 }
@@ -3987,8 +4052,12 @@ function setGroupsError(message) {
 
 function groupsErrorMessage(error) {
   if (error && error.status === 401 && isAdminSignedIn()) {
-    signOutAdmin();
+    signOut();
     return "Your admin session expired. Sign in again to manage groups.";
+  }
+  if (error && error.status === 403) {
+    refreshAccount();
+    return "Your account no longer has admin access.";
   }
   return error.message;
 }
@@ -4262,9 +4331,9 @@ function bindControls() {
       input.select();
     }
   });
-  document.querySelector("#admin-button").addEventListener("click", () => {
-    updateAdminUi();
-    adminDialog.showModal();
+  document.querySelector("#account-button").addEventListener("click", () => {
+    updateAccountUi();
+    accountDialog.showModal();
   });
   document.querySelector("#review-queue-button").addEventListener("click", openReviewQueue);
   document.querySelector("#manage-groups-button").addEventListener("click", openGroupsDialog);
@@ -4317,8 +4386,12 @@ function bindControls() {
   document.querySelector("#review-edit-button").addEventListener("click", () => {
     if (reviewDetail) editReviewSubmission(reviewDetail.eventId);
   });
-  document.querySelector("#admin-login-form").addEventListener("submit", adminLogin);
-  document.querySelector("#admin-logout").addEventListener("click", adminLogout);
+  document.querySelector("#account-form").addEventListener("submit", submitAccountForm);
+  document.querySelector("#account-mode-toggle").addEventListener("click", () => {
+    setAccountMode(accountMode === "register" ? "signin" : "register");
+    document.querySelector("#account-username").focus();
+  });
+  document.querySelector("#account-logout").addEventListener("click", accountLogout);
   document.querySelectorAll("[data-close]").forEach((button) => {
     button.addEventListener("click", () => document.querySelector(`#${button.dataset.close}`).close());
   });
@@ -4336,7 +4409,8 @@ function bindControls() {
 
 const managementRequest = consumeManagementHash();
 bindControls();
-updateAdminUi();
+updateAccountUi();
+refreshAccount();
 renderCalendar();
 if (state.groupFilter.length) {
   // Validate a filtered link's groups before the first calendar request.

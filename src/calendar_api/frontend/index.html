@@ -26,7 +26,7 @@
             <span class="live-dot" aria-hidden="true"></span>
             Approved community events
           </div>
-          <button class="quiet-button" id="admin-button" type="button">Admin sign in</button>
+          <button class="quiet-button" id="account-button" type="button" aria-haspopup="dialog" aria-controls="account-dialog">Sign in</button>
           <button class="quiet-button" id="review-queue-button" type="button" hidden>Review queue <span id="review-queue-count" class="review-count" aria-hidden="true"></span></button>
           <button class="quiet-button" id="manage-groups-button" type="button" hidden>Groups</button>
           <button class="quiet-button" id="subscribe-button" type="button" aria-haspopup="dialog" aria-controls="subscribe-dialog">Subscribe</button>
@@ -269,26 +269,31 @@
       </div>
     </dialog>
 
-    <dialog id="admin-dialog" class="form-dialog" aria-labelledby="admin-dialog-title">
-      <div class="dialog-surface admin-dialog-surface">
+    <dialog id="account-dialog" class="form-dialog" aria-labelledby="account-dialog-title">
+      <div class="dialog-surface account-dialog-surface">
         <div class="dialog-header">
           <div>
-            <p class="eyebrow">Calendar administration</p>
-            <h2 id="admin-dialog-title">Admin sign in</h2>
+            <p class="eyebrow">Your account</p>
+            <h2 id="account-dialog-title">Sign in</h2>
           </div>
-          <button class="icon-close" type="button" data-close="admin-dialog" aria-label="Close admin sign in">
+          <button class="icon-close" type="button" data-close="account-dialog" aria-label="Close account">
             <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" /></svg>
           </button>
         </div>
-        <form id="admin-login-form" class="admin-login-form">
-          <label class="field-label">Username<input id="admin-username" name="username" autocomplete="username" required /></label>
-          <label class="field-label">Password<input id="admin-password" name="password" type="password" autocomplete="current-password" required /></label>
-          <p id="admin-error" class="form-error" role="alert"></p>
-          <button class="primary-button" type="submit">Sign in</button>
+        <form id="account-form" class="account-form">
+          <p id="account-intro" class="form-intro">Anyone with the calendar link can view and add events without an account.</p>
+          <label class="field-label">Username<input id="account-username" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required /></label>
+          <p id="account-username-hint" class="account-hint" hidden>3–32 letters, numbers, dots, dashes, or underscores.</p>
+          <label class="field-label">Password<input id="account-password" name="password" type="password" autocomplete="current-password" required /></label>
+          <p id="account-password-hint" class="account-hint" hidden>At least 8 characters.</p>
+          <p id="account-error" class="form-error" role="alert"></p>
+          <button class="primary-button" id="account-submit" type="submit">Sign in</button>
+          <p class="account-switch"><span id="account-switch-prompt">New here?</span> <button class="text-button" id="account-mode-toggle" type="button">Create an account</button></p>
         </form>
-        <div id="admin-signed-in" hidden>
-          <p>You’re signed in as <strong id="admin-name"></strong>. Events you create or edit will publish immediately.</p>
-          <button class="quiet-button" id="admin-logout" type="button">Sign out</button>
+        <div id="account-signed-in" hidden>
+          <p>You’re signed in as <strong id="account-name"></strong>.</p>
+          <p id="account-admin-note" hidden>You have admin access: events you create or edit publish immediately, and you can review submissions and manage groups.</p>
+          <button class="quiet-button" id="account-logout" type="button">Sign out</button>
         </div>
       </div>
     </dialog>

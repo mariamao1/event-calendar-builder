@@ -142,12 +142,23 @@ submissions stay open to anyone with calendar access. Deleting a group
 retires it (see the data model); its slug can then be reused and the deleted
 group can no longer be changed (`404`).
 
+Account routes (see the access model below):
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| `POST` | `/api/v1/auth/register` | Create an account (link token required, rate limited); `201` with a session token |
+| `POST` | `/api/v1/auth/login` | Username/password sign-in for any account; returns a session token and `is_admin` |
+| `POST` | `/api/v1/auth/logout` | Revoke the calling session token |
+| `GET` | `/api/v1/auth/me` | The signed-in account (`id`, `username`, `is_admin`); `401` without a session |
+
 Admin routes (require admin authentication, see below):
 
 | Method | Route | Purpose |
 | --- | --- | --- |
-| `POST` | `/api/v1/admin/login` | Username/password login, issues a session token |
+| `POST` | `/api/v1/admin/login` | Sign in, but only for accounts with admin access (`403` otherwise) |
 | `POST` | `/api/v1/admin/logout` | Revoke the calling session token |
+| `GET` | `/api/v1/admin/users` | List accounts (`id`, `username`, `is_admin`, `created_at`; never password hashes) |
+| `PATCH` | `/api/v1/admin/users/{user_id}` | Grant or revoke admin access with `{"is_admin": bool}`; admins cannot remove their own (`409`) |
 | `GET/POST` | `/api/v1/admin/groups` | List all live (active and inactive) groups/create a group |
 | `PATCH` | `/api/v1/admin/groups/{group_id}` | Rename, describe, recolor, activate/deactivate |
 | `DELETE` | `/api/v1/admin/groups/{group_id}` | Delete a group (`204`); its events stay visible without it |
@@ -318,7 +329,7 @@ leaving the last approved revision visible until the edit is approved.
 
 ## Access model
 
-Three modes, all enforced server-side:
+Four modes, all enforced server-side:
 
 - **Link mode (no account).** The calendar is private but reachable by anyone
   holding its link: viewing groups, the calendar, published events, and
@@ -335,17 +346,37 @@ Three modes, all enforced server-side:
   calendar-wide or moderation access. Losing the token does not expose the event;
   an administrator can still edit, cancel, or delete it. Raw management tokens
   are returned only at creation time and are never persisted.
-- **Admin mode (real authentication).** Approving, rejecting, revoking, group
-  management, and revision edits require authentication: either a session
-  token from `POST /api/v1/admin/login` (username from `ADMIN_USERNAME`,
-  password verified against the salted PBKDF2-HMAC-SHA256 hash in
-  `ADMIN_PASSWORD_HASH`, generated with `uv run calendar-api hash-password`)
-  sent as `Authorization: Bearer <token>`, or the legacy `X-Admin-Key`
-  service key. Sessions are 256-bit random tokens with an absolute expiry
-  (`ADMIN_SESSION_TTL_SECONDS`, default 12h) and can be revoked via
-  `POST /api/v1/admin/logout`. Raw passwords and tokens are never stored or
-  logged. With no admin credential configured, admin routes fail closed with
-  `503`.
+- **Account mode (optional sign-in).** Anyone holding the link can create an
+  account with `POST /api/v1/auth/register` (username of 3-32 letters,
+  digits, `.`, `_`, or `-`, unique ignoring case; password of 8+ characters)
+  and sign in with `POST /api/v1/auth/login`. Both return a session token
+  sent as `Authorization: Bearer <token>`. An account is an identity only:
+  it grants no admin access, and link holders without one keep every
+  link-mode capability. Signed-in users still edit their own submissions
+  with the event's management token. Passwords are stored as salted
+  PBKDF2-HMAC-SHA256 hashes; logins for unknown usernames do the same hashing
+  work and return the same `401`, so responses do not reveal which usernames
+  exist (registration does, with `409`, and is rate limited). The configured
+  `ADMIN_USERNAME` is reserved.
+- **Admin mode (an account with admin access).** Approving, rejecting,
+  revoking, group management, account roles, and revision edits require an
+  admin: a session for an account with admin access, or the legacy
+  `X-Admin-Key` service key (a signed-in account without admin access gets
+  `403`). Admin is a capability of an account, not a separate login. The operator account (username from `ADMIN_USERNAME`,
+  password verified against the hash in `ADMIN_PASSWORD_HASH`, generated
+  with `uv run calendar-api hash-password`) always has it; registered
+  accounts gain it with `uv run calendar-api grant-admin <username>` (undo
+  with `--revoke`) or from an admin via `PATCH /api/v1/admin/users/{id}`.
+  Sessions store only which account they belong to, and the role is read
+  on every request, so granting or revoking admin access applies to existing
+  sessions immediately. `POST /api/v1/admin/login` remains for admin-only
+  clients and refuses non-admin accounts with `403`. Sessions are 256-bit
+  random tokens with an absolute expiry (`ADMIN_SESSION_TTL_SECONDS`,
+  default 12h, for every account) and can be revoked via
+  `POST /api/v1/auth/logout`. Raw passwords and tokens are never stored or
+  logged. With no admin credential at all (no `ADMIN_API_KEY`, no
+  `ADMIN_PASSWORD_HASH`, and no admin account), admin routes fail closed
+  with `503`.
 
 **Search engines.** The calendar is excluded from indexing: every response
 carries `X-Robots-Tag: noindex, nofollow`, and `GET /robots.txt` answers
@@ -354,7 +385,9 @@ carries `X-Robots-Tag: noindex, nofollow`, and `GET /robots.txt` answers
 **Rate limiting (decision: yes).** Because anyone with the link can submit
 with just a name, public submissions are rate limited per client IP with an
 in-memory sliding window (default 30/hour via `SUBMIT_RATE_LIMIT_MAX` /
-`SUBMIT_RATE_LIMIT_WINDOW_SECONDS`), and admin logins are limited (default
+`SUBMIT_RATE_LIMIT_WINDOW_SECONDS`), registrations likewise (default 10/hour
+via `REGISTER_RATE_LIMIT_MAX` / `REGISTER_RATE_LIMIT_WINDOW_SECONDS`), and
+logins are limited (default
 10/15min via `LOGIN_RATE_LIMIT_MAX` / `LOGIN_RATE_LIMIT_WINDOW_SECONDS`) to
 slow credential guessing. Limits return `429` with a `Retry-After` header.
 The client IP prefers `X-Forwarded-For` when present, so run behind a proxy

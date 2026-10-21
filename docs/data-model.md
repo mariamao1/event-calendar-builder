@@ -12,6 +12,8 @@ groups <--- event_revision_groups ---> event_revisions ---> events
 subscription_groups                          +----> event_occurrences
   |                                                            |
 subscriptions ---> notification_deliveries ---> delivery_items-+
+
+users (standalone: sign-in identities and the admin capability)
 ```
 
 ## Events, revisions, and approval
@@ -174,6 +176,23 @@ must not appear in logs, analytics, or database records.
 
 Submitter and subscriber contacts are personal data. Restrict access, redact
 logs, and define a retention/deletion policy before production use.
+
+## Accounts
+
+`users` holds optional sign-in accounts for anyone holding the calendar link
+(migration `011_user_accounts.sql`). Each row has a `username` (3-32 letters,
+digits, `.`, `_`, or `-`, starting with a letter or digit; unique ignoring
+case via `users_username_unique` on `lower(username)`, casing kept as
+registered), a salted PBKDF2-SHA256 `password_hash` (raw passwords are never
+stored), and `is_admin`. Admin is a capability of an account, not a separate
+kind of account: new accounts start with `is_admin = false`, and the flag is
+read on every request so granting or revoking it applies to existing sessions
+immediately. The operator admin configured by `ADMIN_USERNAME` /
+`ADMIN_PASSWORD_HASH` is not a row; its username is reserved at registration.
+
+Accounts are deliberately not referenced by events or revisions yet:
+submissions stay accountless (name, contact, management token), so linking
+or deleting an account never changes an event's audit trail.
 
 ## Notification ledger and change behavior
 

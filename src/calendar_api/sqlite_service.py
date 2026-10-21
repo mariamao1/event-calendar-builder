@@ -153,6 +153,79 @@ def delete_group(connection: sqlite3.Connection, group_id: UUID) -> None:
         raise NotFoundError("group not found")
 
 
+_USER_FIELDS = "id, username, is_admin, created_at"
+
+
+def _user(row: sqlite3.Row | None) -> dict | None:
+    if row is None:
+        return None
+    return {**dict(row), "is_admin": bool(row["is_admin"])}
+
+
+def create_user(
+    connection: sqlite3.Connection, username: str, password_hash: str
+) -> dict:
+    user_id = str(uuid4())
+    now = _timestamp()
+    try:
+        connection.execute(
+            """
+            INSERT INTO users (id, username, password_hash, is_admin, created_at, updated_at)
+            VALUES (?, ?, ?, 0, ?, ?)
+            """,
+            (user_id, username, password_hash, now, now),
+        )
+    except sqlite3.IntegrityError as exc:
+        raise ConflictError(f"username '{username}' is already taken") from exc
+    return get_user(connection, user_id)
+
+
+def get_user(connection: sqlite3.Connection, user_id: UUID | str) -> dict | None:
+    return _user(
+        connection.execute(
+            f"SELECT {_USER_FIELDS} FROM users WHERE id = ?", (str(user_id),)
+        ).fetchone()
+    )
+
+
+def get_user_credentials(
+    connection: sqlite3.Connection, username: str
+) -> dict | None:
+    """The account (with its password hash) for a username, ignoring case."""
+    return _user(
+        connection.execute(
+            f"SELECT {_USER_FIELDS}, password_hash FROM users WHERE username = ?",
+            (username,),
+        ).fetchone()
+    )
+
+
+def list_users(connection: sqlite3.Connection) -> list[dict]:
+    rows = connection.execute(
+        f"SELECT {_USER_FIELDS} FROM users ORDER BY username COLLATE NOCASE, id"
+    ).fetchall()
+    return [_user(row) for row in rows]
+
+
+def set_user_admin(
+    connection: sqlite3.Connection, user_id: UUID, is_admin: bool
+) -> dict:
+    cursor = connection.execute(
+        "UPDATE users SET is_admin = ?, updated_at = ? WHERE id = ?",
+        (int(is_admin), _timestamp(), str(user_id)),
+    )
+    if cursor.rowcount == 0:
+        raise NotFoundError("user not found")
+    return get_user(connection, user_id)
+
+
+def has_admin_user(connection: sqlite3.Connection) -> bool:
+    return (
+        connection.execute("SELECT 1 FROM users WHERE is_admin = 1 LIMIT 1").fetchone()
+        is not None
+    )
+
+
 def _require_active_groups(
     connection: sqlite3.Connection, group_ids: list[UUID]
 ) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import functools
 import hashlib
 import hmac
 import secrets
@@ -48,8 +49,23 @@ def verify_password(password: str, encoded: str) -> bool:
     return hmac.compare_digest(candidate, expected)
 
 
+@functools.cache
+def _decoy_hash() -> str:
+    return hash_password(secrets.token_urlsafe(16))
+
+
+def reject_password(password: str) -> bool:
+    """Fail a login for an unknown username at the cost of a real check.
+
+    Spending the same PBKDF2 work as :func:`verify_password` keeps response
+    timing from revealing which usernames have accounts.
+    """
+    verify_password(password, _decoy_hash())
+    return False
+
+
 def new_token() -> str:
-    """Generate a 256-bit unguessable token (calendar link or admin session)."""
+    """Generate a 256-bit unguessable token (calendar link or sign-in session)."""
     return secrets.token_urlsafe(_TOKEN_BYTES)
 
 
@@ -83,12 +99,16 @@ def tokens_equal(provided: str | None, expected: str | None) -> bool:
 
 @dataclass
 class _Session:
-    username: str
+    subject: str
     expires_at: float
 
 
 class SessionStore:
-    """Process-local store for admin session tokens.
+    """Process-local store for sign-in session tokens.
+
+    Each session records an opaque subject string (the app stores which
+    account it belongs to) and never the account's role, so role changes
+    apply to existing sessions immediately.
 
     Tokens are 256-bit random values looked up by SHA-256 digest with an
     absolute expiry. Sessions never leave this process, so multi-process
@@ -99,16 +119,16 @@ class SessionStore:
         self._lock = threading.Lock()
         self._sessions: dict[str, _Session] = {}
 
-    def create(self, username: str, *, ttl_seconds: int) -> tuple[str, float]:
+    def create(self, subject: str, *, ttl_seconds: int) -> tuple[str, float]:
         token = new_token()
         expires_at = time.time() + ttl_seconds
         with self._lock:
             self._prune_locked()
-            self._sessions[token_digest(token)] = _Session(username, expires_at)
+            self._sessions[token_digest(token)] = _Session(subject, expires_at)
         return token, expires_at
 
     def validate(self, token: str | None) -> str | None:
-        """Return the session username, or None when unknown/expired."""
+        """Return the session subject, or None when unknown/expired."""
         if not token:
             return None
         digest = token_digest(token)
@@ -119,7 +139,7 @@ class SessionStore:
             if session.expires_at <= time.time():
                 del self._sessions[digest]
                 return None
-            return session.username
+            return session.subject
 
     def revoke(self, token: str | None) -> bool:
         if not token:

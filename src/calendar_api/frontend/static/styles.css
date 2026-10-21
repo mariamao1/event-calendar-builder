@@ -1045,7 +1045,7 @@ dialog::backdrop {
 }
 
 .event-form-surface,
-.admin-dialog-surface {
+.account-dialog-surface {
   max-height: min(92vh, 960px);
   overflow-y: auto;
 }
@@ -1062,7 +1062,7 @@ dialog::backdrop {
   font-family: inherit;
 }
 
-.admin-dialog-surface {
+.account-dialog-surface {
   width: min(94vw, 440px);
   padding: 27px;
 }
@@ -1070,7 +1070,7 @@ dialog::backdrop {
 /* The dialog element itself is what the browser centers, so size it to
    match its card. Otherwise the narrower card sits left-aligned inside a
    wider invisible dialog and the popup looks off-center. */
-#admin-dialog {
+#account-dialog {
   width: min(94vw, 440px);
 }
 
@@ -1564,20 +1564,49 @@ dialog::backdrop {
   font-weight: 900;
 }
 
-.admin-login-form {
+.account-form {
   display: grid;
   gap: 15px;
   margin-top: 23px;
 }
 
-#admin-signed-in {
+.account-form .form-intro {
+  margin: 0;
+}
+
+.account-hint {
+  margin: -9px 0 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.account-switch {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+.account-switch .text-button {
+  padding: 4px 2px;
+  color: var(--ink);
+  font-size: inherit;
+  text-decoration: underline;
+}
+
+.account-hint[hidden],
+#account-admin-note[hidden] {
+  display: none;
+}
+
+#account-signed-in {
   margin-top: 22px;
   color: var(--muted);
   font-size: 0.82rem;
   line-height: 1.55;
 }
 
-#admin-signed-in p {
+#account-signed-in p {
   margin: 0 0 16px;
 }
 
@@ -1585,8 +1614,8 @@ dialog::backdrop {
 #all-day-fields[hidden],
 #event-form[hidden],
 #event-form-success[hidden],
-#admin-login-form[hidden],
-#admin-signed-in[hidden],
+#account-form[hidden],
+#account-signed-in[hidden],
 #edit-event-button[hidden],
 #management-link-wrap[hidden] {
   display: none;
@@ -3086,7 +3115,7 @@ dialog::backdrop {
 
   .form-dialog,
   .event-form-surface,
-  .admin-dialog-surface {
+  .account-dialog-surface {
     max-height: min(92dvh, 960px);
   }
 }

@@ -145,3 +145,16 @@ CREATE INDEX IF NOT EXISTS local_event_occurrences_timed_calendar_idx
 CREATE INDEX IF NOT EXISTS local_event_occurrences_all_day_calendar_idx
   ON event_occurrences(start_date, end_date, event_id)
   WHERE status = 'scheduled' AND is_all_day = 1;
+
+-- Accounts for anyone holding the calendar link. Admin is a per-account
+-- capability (is_admin), not a separate kind of account. Usernames are
+-- unique ignoring case; passwords are stored only as PBKDF2 hashes.
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  username TEXT NOT NULL COLLATE NOCASE UNIQUE
+    CHECK (length(username) BETWEEN 3 AND 32),
+  password_hash TEXT NOT NULL CHECK (password_hash LIKE 'pbkdf2-sha256$%'),
+  is_admin INTEGER NOT NULL DEFAULT 0 CHECK (is_admin IN (0, 1)),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);

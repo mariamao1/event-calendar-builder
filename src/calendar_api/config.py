@@ -19,19 +19,22 @@ class Settings:
     # every public read/submission must present it; when unset, public routes
     # stay open for local development.
     calendar_access_token: str | None = None
-    # Real admin authentication: username plus a PBKDF2 hash produced by
-    # `calendar-api hash-password`. Sessions issued by /admin/login expire
-    # after admin_session_ttl_seconds.
+    # The configured operator admin: username plus a PBKDF2 hash produced by
+    # `calendar-api hash-password`. It signs in like any account (and is
+    # always an admin); registered accounts live in the users table. Every
+    # session, operator or account, expires after admin_session_ttl_seconds.
     admin_username: str = "admin"
     admin_password_hash: str | None = None
     admin_session_ttl_seconds: int = 12 * 3600
-    # Server-side abuse guards. Anyone holding the link can submit, so public
-    # submissions are rate limited per client IP; admin logins are limited to
-    # slow down credential guessing.
+    # Server-side abuse guards. Anyone holding the link can submit or create
+    # an account, so public submissions and registrations are rate limited
+    # per client IP; logins are limited to slow down credential guessing.
     submit_rate_limit_max: int = 30
     submit_rate_limit_window_seconds: int = 3600
     login_rate_limit_max: int = 10
     login_rate_limit_window_seconds: int = 900
+    register_rate_limit_max: int = 10
+    register_rate_limit_window_seconds: int = 3600
     # Street-address suggestions in the event form come from a Photon
     # (OpenStreetMap) geocoder; an empty URL turns them off. `near` biases
     # results toward a lat/lon, and lookups are limited per client IP per
@@ -64,6 +67,12 @@ class Settings:
             login_rate_limit_max=int(os.environ.get("LOGIN_RATE_LIMIT_MAX", "10")),
             login_rate_limit_window_seconds=int(
                 os.environ.get("LOGIN_RATE_LIMIT_WINDOW_SECONDS", "900")
+            ),
+            register_rate_limit_max=int(
+                os.environ.get("REGISTER_RATE_LIMIT_MAX", "10")
+            ),
+            register_rate_limit_window_seconds=int(
+                os.environ.get("REGISTER_RATE_LIMIT_WINDOW_SECONDS", "3600")
             ),
             address_search_url=os.environ.get(
                 "ADDRESS_SEARCH_URL", "https://photon.komoot.io/api/"

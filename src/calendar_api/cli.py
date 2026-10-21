@@ -35,6 +35,13 @@ def _parser() -> argparse.ArgumentParser:
         "new-link-token",
         help="print an unguessable token for CALENDAR_ACCESS_TOKEN",
     )
+    admin_parser = subcommands.add_parser(
+        "grant-admin", help="give a registered account admin access"
+    )
+    admin_parser.add_argument("username")
+    admin_parser.add_argument(
+        "--revoke", action="store_true", help="remove admin access instead"
+    )
     return parser
 
 
@@ -81,6 +88,15 @@ def main() -> None:
     service = sqlite_service if database.dialect == "sqlite" else postgres_service
     database.open()
     try:
+        if args.command == "grant-admin":
+            with database.transaction() as connection:
+                user = service.get_user_credentials(connection, args.username)
+                if user is None:
+                    raise SystemExit(f"no account named '{args.username}'")
+                service.set_user_admin(connection, user["id"], not args.revoke)
+            change = "no longer has" if args.revoke else "now has"
+            print(f"{user['username']} {change} admin access")
+            return
         with database.transaction() as connection:
             result = service.materialize_all(
                 connection,

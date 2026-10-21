@@ -150,7 +150,7 @@ def test_calendar_shell_contains_complete_event_form(tmp_path: Path) -> None:
         'id="recurrence-summary"',
         'id="event-groups"',
         'id="submitter-contact"',
-        'id="admin-login-form"',
+        'id="account-form"',
     ):
         assert marker in shell
     for symbol in (

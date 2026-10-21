@@ -317,6 +317,22 @@ class LoginInput(StrictModel):
     password: str = Field(min_length=1, max_length=1024)
 
 
+# Usernames are 3-32 letters, digits, dots, underscores, or hyphens, starting
+# with a letter or digit, so they stay readable as submitter/actor labels.
+USERNAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{2,31}$"
+
+
+class RegisterInput(StrictModel):
+    username: Annotated[
+        str, StringConstraints(strip_whitespace=True, pattern=USERNAME_PATTERN)
+    ]
+    password: str = Field(min_length=8, max_length=1024)
+
+
+class UserRoleUpdate(StrictModel):
+    is_admin: bool
+
+
 class RemovalInput(BaseModel):
     """Optional note for event cancellation or deletion.
 

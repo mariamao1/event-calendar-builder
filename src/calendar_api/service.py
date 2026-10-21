@@ -128,6 +128,71 @@ def delete_group(connection: Connection, group_id: UUID) -> None:
         raise NotFoundError("group not found")
 
 
+_USER_FIELDS = "id, username, is_admin, created_at"
+
+
+def create_user(connection: Connection, username: str, password_hash: str) -> dict:
+    try:
+        row = connection.execute(
+            f"""
+            INSERT INTO users (username, password_hash)
+            VALUES (%s, %s)
+            RETURNING {_USER_FIELDS}
+            """,
+            (username, password_hash),
+        ).fetchone()
+    except UniqueViolation as exc:
+        raise ConflictError(f"username '{username}' is already taken") from exc
+    return _as_dict(row)
+
+
+def get_user(connection: Connection, user_id: UUID | str) -> dict | None:
+    row = connection.execute(
+        f"SELECT {_USER_FIELDS} FROM users WHERE id = %s", (user_id,)
+    ).fetchone()
+    return _as_dict(row) if row is not None else None
+
+
+def get_user_credentials(connection: Connection, username: str) -> dict | None:
+    """The account (with its password hash) for a username, ignoring case."""
+    row = connection.execute(
+        f"""
+        SELECT {_USER_FIELDS}, password_hash
+          FROM users WHERE lower(username) = lower(%s)
+        """,
+        (username,),
+    ).fetchone()
+    return _as_dict(row) if row is not None else None
+
+
+def list_users(connection: Connection) -> list[dict]:
+    rows = connection.execute(
+        f"SELECT {_USER_FIELDS} FROM users ORDER BY lower(username), id"
+    ).fetchall()
+    return [_as_dict(row) for row in rows]
+
+
+def set_user_admin(connection: Connection, user_id: UUID, is_admin: bool) -> dict:
+    row = connection.execute(
+        f"""
+        UPDATE users SET is_admin = %s, updated_at = now()
+         WHERE id = %s
+        RETURNING {_USER_FIELDS}
+        """,
+        (is_admin, user_id),
+    ).fetchone()
+    if row is None:
+        raise NotFoundError("user not found")
+    return _as_dict(row)
+
+
+def has_admin_user(connection: Connection) -> bool:
+    return (
+        connection.execute("SELECT 1 FROM users WHERE is_admin LIMIT 1").fetchone()
+        is not None
+    )
+
+
 def _require_active_groups(connection: Connection, group_ids: list[UUID]) -> None:
     if not group_ids:
         return
