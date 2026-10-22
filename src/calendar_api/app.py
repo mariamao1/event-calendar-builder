@@ -40,6 +40,7 @@ from .schemas import (
     RegisterInput,
     RemovalInput,
     ReviewInput,
+    RsvpInput,
     UserRoleUpdate,
     normalize_scope,
 )
@@ -993,6 +994,118 @@ def create_app(
             return service.get_published_event(
                 connection, event_id, occurrence_id=occurrence
             )
+
+    def require_account(authorization: str | None) -> Account:
+        """The signed-in account behind a Bearer [REDACTED]; 401 without one."""
+        account = session_account(authorization)
+        if account is None:
+            raise ApiError(401, "unauthorized", "sign in to continue")
+        return account
+
+    def rsvp_user_key(account: Account) -> tuple[str, str]:
+        """The `(user_id, username)` an RSVP row is stored under.
+
+        Registered accounts use their id. The configured operator is not a
+        users row, so it answers under the stable "operator" key instead.
+        """
+        if account.id is None:
+            return ("operator", account.username)
+        return (str(account.id), account.username)
+
+    def set_event_rsvp(
+        event_id: UUID, payload: RsvpInput, authorization: str | None
+    ) -> dict:
+        """Create or change the caller's RSVP answer for an event."""
+        account = require_account(authorization)
+        status = payload.resolved_status()
+        user_id, username = rsvp_user_key(account)
+        with database.transaction() as connection:
+            return service.set_rsvp(connection, event_id, user_id, username, status)
+
+    @app.post("/api/v1/events/{event_id}/rsvp")
+    def post_event_rsvp(
+        event_id: UUID,
+        payload: RsvpInput,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> dict:
+        """RSVP to an event as the signed-in user.
+
+        The event opts in with its `rsvp_enabled` toggle; answering again
+        changes the answer instead of adding a row. Accepts either
+        `{"status": "attending"}` (`"declined"` to decline) or
+        `{"attending": true}` (`false` to decline).
+        """
+        return set_event_rsvp(event_id, payload, authorization)
+
+    @app.post("/api/v1/events/{event_id}/rsvps")
+    def post_event_rsvps(
+        event_id: UUID,
+        payload: RsvpInput,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> dict:
+        """Alias of `POST /api/v1/events/{event_id}/rsvp`."""
+        return set_event_rsvp(event_id, payload, authorization)
+
+    @app.put("/api/v1/events/{event_id}/rsvp")
+    def put_event_rsvp(
+        event_id: UUID,
+        payload: RsvpInput,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> dict:
+        """Alias of `POST /api/v1/events/{event_id}/rsvp`."""
+        return set_event_rsvp(event_id, payload, authorization)
+
+    @app.get("/api/v1/events/{event_id}/rsvps")
+    def list_event_rsvps(
+        event_id: UUID,
+        x_event_management_token: Annotated[
+            str | None, Header(alias="X-Event-Management-Token")
+        ] = None,
+        x_admin_key: Annotated[str | None, Header()] = None,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> dict:
+        """Every RSVP for an event, with per-answer counts.
+
+        When the event's RSVP toggle is on, any signed-in account sees the
+        guest list, as do the event's creator (via `X-Event-Management-Token`)
+        and admins. Anything else is `401`.
+        """
+        if (
+            session_account(authorization) is None
+            and admin_identity(x_admin_key, authorization) is None
+        ):
+            with database.connection() as connection:
+                if not service.event_management_token_matches(
+                    connection, event_id, x_event_management_token
+                ):
+                    raise ApiError(401, "unauthorized", "sign in to continue")
+        with database.connection() as connection:
+            return service.list_rsvps(connection, event_id)
+
+    @app.get("/api/v1/events/{event_id}/rsvp")
+    def get_my_event_rsvp(
+        event_id: UUID,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> dict:
+        """The caller's own RSVP answer (`null` when they have not answered)."""
+        account = require_account(authorization)
+        user_id, _ = rsvp_user_key(account)
+        with database.connection() as connection:
+            return {
+                "event_id": event_id,
+                "rsvp": service.get_rsvp(connection, event_id, user_id),
+            }
+
+    @app.delete("/api/v1/events/{event_id}/rsvp")
+    def delete_my_event_rsvp(
+        event_id: UUID,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> dict:
+        """Withdraw the caller's RSVP answer."""
+        account = require_account(authorization)
+        user_id, _ = rsvp_user_key(account)
+        with database.transaction() as connection:
+            return service.delete_rsvp(connection, event_id, user_id)
 
     @app.get("/api/v1/calendar", dependencies=[link])
     def calendar(

@@ -53,6 +53,10 @@ CREATE TABLE IF NOT EXISTS event_revisions (
   -- Linked file attachments (at most 3): a JSON array of
   -- {"url", "name"} objects, NULL when the event carries none.
   attachments TEXT,
+  -- Optional RSVP toggle: when set, signed-in users may RSVP to the event
+  -- and see each other's RSVPs. Off by default; revisioned with the rest of
+  -- the event content.
+  rsvp_enabled INTEGER NOT NULL DEFAULT 0 CHECK (rsvp_enabled IN (0, 1)),
   is_all_day INTEGER NOT NULL CHECK (is_all_day IN (0, 1)),
   starts_at TEXT,
   ends_at TEXT,
@@ -165,6 +169,23 @@ CREATE TABLE IF NOT EXISTS event_files (
 
 CREATE INDEX IF NOT EXISTS local_event_files_event_idx
   ON event_files(event_id, created_at, id);
+
+-- RSVPs from signed-in users. One row per (event, user): RSVPing again
+-- changes the answer. `user_id` is the account id (or "operator" for the
+-- configured operator identity, which is not a users row), so it carries no
+-- foreign key; usernames cannot be renamed, so the snapshot never stales.
+CREATE TABLE IF NOT EXISTS event_rsvps (
+  event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL,
+  username TEXT NOT NULL CHECK (trim(username) <> ''),
+  status TEXT NOT NULL CHECK (status IN ('attending', 'declined')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (event_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS local_event_rsvps_user_idx
+  ON event_rsvps(user_id);
 
 -- Accounts for anyone holding the calendar link. Admin is a per-account
 -- capability (is_admin), not a separate kind of account. Usernames are

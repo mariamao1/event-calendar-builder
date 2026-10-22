@@ -123,6 +123,65 @@ class Submitter(StrictModel):
     ] = ""
 
 
+# RSVP answers. An event opts in with `rsvp_enabled`; signed-in users then
+# answer whether they are attending. Canonical answers are "attending" and
+# "declined"; common spellings ("yes"/"no", "going", "accepted"/"decline",
+# "not_attending", ...) normalize to them so clients do not need to guess.
+RSVP_STATUSES = ("attending", "declined")
+
+_RSVP_STATUS_ALIASES = {
+    "attending": "attending",
+    "accepted": "attending",
+    "yes": "attending",
+    "going": "attending",
+    "will_attend": "attending",
+    "declined": "declined",
+    "decline": "declined",
+    "no": "declined",
+    "not_attending": "declined",
+    "cannot_attend": "declined",
+    "cant_go": "declined",
+}
+
+
+def normalize_rsvp_status(value: str | None) -> str:
+    """Map a user-supplied RSVP answer to "attending" or "declined".
+
+    Raises a 422 ValidationError for anything else (including "maybe"),
+    so callers get a clean API error instead of a silently stored answer.
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        raise ValidationError("status must be 'attending' or 'declined'")
+    canonical = _RSVP_STATUS_ALIASES.get(
+        value.strip().lower().replace("-", "_").replace(" ", "_")
+    )
+    if canonical is None:
+        raise ValidationError(
+            "status must be 'attending' or 'declined'; got "
+            f"{value!r}"
+        )
+    return canonical
+
+
+class RsvpInput(StrictModel):
+    """One RSVP answer: either a status or a plain attending flag."""
+
+    status: str | None = None
+    attending: bool | None = None
+
+    @model_validator(mode="after")
+    def exactly_one_answer(self) -> RsvpInput:
+        if (self.status is None) == (self.attending is None):
+            raise ValueError("provide either 'status' or 'attending'")
+        return self
+
+    def resolved_status(self) -> str:
+        if self.status is not None:
+            return normalize_rsvp_status(self.status)
+        assert self.attending is not None
+        return "attending" if self.attending else "declined"
+
+
 class RecurrenceDate(StrictModel):
     local_start: datetime
     kind: Literal["include", "exclude"]
@@ -230,6 +289,10 @@ class EventRevisionInput(StrictModel):
         default_factory=list, max_length=MAX_ATTACHMENTS
     )
     group_ids: list[UUID] = Field(default_factory=list, max_length=100)
+    # Optional RSVP toggle: when true, signed-in users may RSVP to the event
+    # and see each other's RSVPs. Off by default; revisioned like the rest of
+    # the event content, so enabling it follows the normal review flow.
+    rsvp_enabled: bool = False
     submitter: Submitter
     # Scoped edits of a recurring event. These ride alongside the full
     # revision payload so one form submission carries both the new content

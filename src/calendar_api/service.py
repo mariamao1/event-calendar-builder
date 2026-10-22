@@ -240,20 +240,23 @@ def _insert_revision(
         "submitted_by_name": payload.submitter.name,
         "submitted_by_channel": payload.submitter.channel,
         "submitted_by_contact": contact,
+        "rsvp_enabled": payload.rsvp_enabled,
     }
     revision = connection.execute(
         """
         INSERT INTO event_revisions (
           event_id, revision_number, supersedes_revision_id,
           title, description, location_name, location_address, virtual_url,
-          event_url, attachments, is_all_day, starts_at, ends_at, start_date,
+          event_url, attachments, rsvp_enabled, is_all_day, starts_at,
+          ends_at, start_date,
           end_date,
           timezone, recurrence_rule, submitted_by_name, submitted_by_channel,
           submitted_by_contact
         ) VALUES (
           %(event_id)s, %(revision_number)s, %(supersedes_revision_id)s,
           %(title)s, %(description)s, %(location_name)s, %(location_address)s,
-          %(virtual_url)s, %(event_url)s, %(attachments)s, %(is_all_day)s,
+          %(virtual_url)s, %(event_url)s, %(attachments)s, %(rsvp_enabled)s,
+          %(is_all_day)s,
           %(starts_at)s, %(ends_at)s,
           %(start_date)s, %(end_date)s, %(timezone)s, %(recurrence_rule)s,
           %(submitted_by_name)s, %(submitted_by_channel)s,
@@ -343,7 +346,7 @@ def get_editable_event(connection: Connection, event_id: UUID) -> dict:
         SELECT r.id AS revision_id, r.event_id, r.revision_number,
                r.approval_status, r.title, r.description, r.location_name,
                r.location_address, r.virtual_url, r.event_url, r.attachments,
-               r.is_all_day,
+               r.rsvp_enabled, r.is_all_day,
                r.starts_at,
                r.ends_at, r.start_date, r.end_date, r.timezone,
                r.recurrence_rule, r.submitted_by_name, r.submitted_by_channel,
@@ -412,7 +415,9 @@ def create_revision(
               location_address = %(location_address)s,
               virtual_url = %(virtual_url)s,
               event_url = %(event_url)s,
-              attachments = %(attachments)s, is_all_day = %(is_all_day)s,
+              attachments = %(attachments)s,
+              rsvp_enabled = %(rsvp_enabled)s,
+              is_all_day = %(is_all_day)s,
               starts_at = %(starts_at)s, ends_at = %(ends_at)s,
               start_date = %(start_date)s, end_date = %(end_date)s,
               timezone = %(timezone)s, recurrence_rule = %(recurrence_rule)s,
@@ -432,6 +437,7 @@ def create_revision(
                 "virtual_url": payload.virtual_url or None,
                 "event_url": payload.event_url or None,
                 "attachments": attachments_json(payload.attachments),
+                "rsvp_enabled": payload.rsvp_enabled,
                 "is_all_day": payload.is_all_day,
                 "starts_at": payload.starts_at,
                 "ends_at": payload.ends_at,
@@ -1627,6 +1633,7 @@ def get_published_event(
         raise NotFoundError("published event not found")
     result = _as_dict(row)
     result["is_cancelled"] = result.get("cancelled_at") is not None
+    result["rsvp_counts"] = _rsvp_counts(connection, result["event_id"])
     result["attachments"] = parse_attachments(result.get("attachments"))
     result["files"] = list_event_files(connection, result["event_id"])
     result["recurrence_dates"] = _load_recurrence_dates(
@@ -1702,7 +1709,8 @@ def review_queue(
         SELECT e.id AS event_id, e.published_revision_id,
                e.cancelled_at IS NOT NULL AS is_cancelled,
                r.id AS revision_id, r.revision_number, r.approval_status,
-               r.title, r.description, r.is_all_day, r.starts_at, r.ends_at,
+               r.title, r.description, r.rsvp_enabled, r.is_all_day,
+               r.starts_at, r.ends_at,
                r.start_date, r.end_date, r.timezone, r.recurrence_rule,
                r.submitted_by_name, r.submitted_by_channel,
                r.submitted_by_contact, r.submitted_at, r.reviewed_at,
@@ -1779,6 +1787,124 @@ def get_admin_event(connection: Connection, event_id: UUID) -> dict:
         revision["attachments"] = parse_attachments(revision.get("attachments"))
         result["revisions"].append(revision)
     return result
+
+
+# ---------------------------------------------------------------------------
+# RSVPs from signed-in users.
+#
+# An event opts in with the revisioned `rsvp_enabled` toggle (off by
+# default). Signed-in users may then answer whether they are attending
+# ("attending" or "declined"); every RSVP'ed user sees the full guest list.
+# One row per (event, user): answering again changes the answer instead of
+# adding a row. RSVPs apply to the event, not to one date of a series.
+
+
+_RSVP_FIELDS = "event_id, user_id, username, status, created_at, updated_at"
+
+
+def _rsvp_public(row: Any) -> dict:
+    item = _as_dict(row)
+    item["event_id"] = str(item["event_id"])
+    item["user_id"] = str(item["user_id"])
+    item["attending"] = item["status"] == "attending"
+    return item
+
+
+def _rsvp_counts(connection: Connection, event_id: UUID) -> dict:
+    counts = {"attending": 0, "declined": 0}
+    for row in connection.execute(
+        "SELECT status, count(*) AS total FROM event_rsvps"
+        " WHERE event_id = %s GROUP BY status",
+        (event_id,),
+    ).fetchall():
+        if row["status"] in counts:
+            counts[row["status"]] = row["total"]
+    return {**counts, "total": counts["attending"] + counts["declined"]}
+
+
+def _require_rsvp_event(connection: Connection, event_id: UUID) -> dict:
+    """The published event RSVPs apply to, when its toggle is on.
+
+    Missing, unpublished, deleted, and hidden events read as missing; an
+    event whose toggle is off reads as a conflict.
+    """
+    try:
+        detail = get_published_event(connection, event_id)
+    except NotFoundError:
+        raise NotFoundError("event not found") from None
+    if not detail.get("rsvp_enabled"):
+        raise ConflictError("RSVPs are not enabled for this event")
+    return detail
+
+
+def set_rsvp(
+    connection: Connection,
+    event_id: UUID,
+    user_id: UUID | str,
+    username: str,
+    status: str,
+) -> dict:
+    """Create or change one user's RSVP answer for an event."""
+    _require_rsvp_event(connection, event_id)
+    row = connection.execute(
+        """
+        INSERT INTO event_rsvps
+          (event_id, user_id, username, status)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (event_id, user_id) DO UPDATE SET
+          username = excluded.username,
+          status = excluded.status,
+          updated_at = now()
+        RETURNING *
+        """,
+        (event_id, str(user_id), username, status),
+    ).fetchone()
+    return _rsvp_public(row)
+
+
+def get_rsvp(
+    connection: Connection, event_id: UUID, user_id: UUID | str
+) -> dict | None:
+    """One user's RSVP answer, or None when they have not answered."""
+    _require_rsvp_event(connection, event_id)
+    row = connection.execute(
+        f"SELECT {_RSVP_FIELDS} FROM event_rsvps"
+        " WHERE event_id = %s AND user_id = %s",
+        (event_id, str(user_id)),
+    ).fetchone()
+    return _rsvp_public(row) if row is not None else None
+
+
+def list_rsvps(connection: Connection, event_id: UUID) -> dict:
+    """Every RSVP for an event, with per-answer counts."""
+    detail = _require_rsvp_event(connection, event_id)
+    rows = connection.execute(
+        f"SELECT {_RSVP_FIELDS} FROM event_rsvps WHERE event_id = %s"
+        " ORDER BY lower(username), user_id",
+        (event_id,),
+    ).fetchall()
+    return {
+        "event_id": str(event_id),
+        "rsvp_enabled": bool(detail.get("rsvp_enabled", False)),
+        "counts": _rsvp_counts(connection, event_id),
+        "items": [_rsvp_public(row) for row in rows],
+    }
+
+
+def delete_rsvp(connection: Connection, event_id: UUID, user_id: UUID | str) -> dict:
+    """Withdraw one user's RSVP answer."""
+    _require_rsvp_event(connection, event_id)
+    cursor = connection.execute(
+        "DELETE FROM event_rsvps WHERE event_id = %s AND user_id = %s",
+        (event_id, str(user_id)),
+    )
+    if cursor.rowcount == 0:
+        raise NotFoundError("RSVP not found")
+    return {
+        "event_id": str(event_id),
+        "user_id": str(user_id),
+        "withdrawn": True,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -2019,6 +2145,7 @@ def _synth_values(
     virtual_url: str | None,
     event_url: str | None,
     attachments: list[Any],
+    rsvp_enabled: bool,
     is_all_day: bool,
     starts_at: datetime | None,
     ends_at: datetime | None,
@@ -2040,6 +2167,7 @@ def _synth_values(
         "virtual_url": virtual_url,
         "event_url": event_url,
         "attachments": attachments,
+        "rsvp_enabled": rsvp_enabled,
         "is_all_day": is_all_day,
         "starts_at": starts_at.isoformat() if starts_at else None,
         "ends_at": ends_at.isoformat() if ends_at else None,
@@ -2079,7 +2207,8 @@ def _insert_approved_revision(
         INSERT INTO event_revisions (
           event_id, revision_number, supersedes_revision_id,
           approval_status, title, description, location_name, location_address,
-          virtual_url, event_url, attachments, is_all_day, starts_at, ends_at,
+          virtual_url, event_url, attachments, rsvp_enabled, is_all_day,
+          starts_at, ends_at,
           start_date,
           end_date, timezone, recurrence_rule, submitted_by_name,
           submitted_by_channel, submitted_by_contact, submitted_at, reviewed_at,
@@ -2089,7 +2218,7 @@ def _insert_approved_revision(
           %(event_id)s, %(revision_number)s, %(supersedes_revision_id)s,
           'approved', %(title)s, %(description)s, %(location_name)s,
           %(location_address)s, %(virtual_url)s, %(event_url)s,
-          %(attachments)s,
+          %(attachments)s, %(rsvp_enabled)s,
           %(is_all_day)s, %(starts_at)s,
           %(ends_at)s, %(start_date)s, %(end_date)s, %(timezone)s,
           %(recurrence_rule)s, %(submitted_by_name)s, %(submitted_by_channel)s,
@@ -2108,6 +2237,7 @@ def _insert_approved_revision(
             "virtual_url": validated.virtual_url or None,
             "event_url": validated.event_url or None,
             "attachments": attachments_json(validated.attachments),
+            "rsvp_enabled": validated.rsvp_enabled,
             "is_all_day": validated.is_all_day,
             "starts_at": validated.starts_at,
             "ends_at": validated.ends_at,
@@ -2440,6 +2570,7 @@ def edit_future_occurrences(
             virtual_url=payload.virtual_url,
             event_url=payload.event_url,
             attachments=payload.attachments,
+            rsvp_enabled=payload.rsvp_enabled,
             is_all_day=payload.is_all_day,
             starts_at=new_starts_at,
             ends_at=new_ends_at,
@@ -2556,6 +2687,7 @@ def _commit_truncation(
             virtual_url=revision["virtual_url"],
             event_url=revision["event_url"],
             attachments=revision["attachments"],
+            rsvp_enabled=bool(revision["rsvp_enabled"]),
             is_all_day=bool(revision["is_all_day"]),
             starts_at=revision["starts_at"],
             ends_at=revision["ends_at"],

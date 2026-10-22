@@ -171,6 +171,18 @@
           <h3 id="event-attachments-heading" class="event-section-heading">Attachments</h3>
           <div id="event-attachment-list" class="attachment-list"></div>
         </section>
+        <section id="event-dialog-rsvp" class="event-rsvp" aria-labelledby="event-rsvp-heading" hidden>
+          <h3 id="event-rsvp-heading" class="event-section-heading">RSVP</h3>
+          <p id="event-rsvp-summary" class="event-rsvp-summary" aria-live="polite"></p>
+          <div id="event-rsvp-actions" class="event-rsvp-actions" hidden>
+            <button class="quiet-button" id="rsvp-attending-button" type="button" aria-pressed="false">Attending</button>
+            <button class="quiet-button" id="rsvp-declined-button" type="button" aria-pressed="false">Can't attend</button>
+            <button class="quiet-button" id="rsvp-withdraw-button" type="button" hidden>Withdraw RSVP</button>
+          </div>
+          <p id="event-rsvp-signin" class="field-help" hidden>Sign in to RSVP and see who's coming.</p>
+          <ul id="event-rsvp-list" class="rsvp-list"></ul>
+          <p id="event-rsvp-error" class="form-error" role="alert"></p>
+        </section>
         <section id="event-dialog-export" class="event-export" aria-labelledby="event-export-heading" hidden>
           <h3 id="event-export-heading" class="event-section-heading">Add to your calendar</h3>
           <div id="event-export-scope" class="event-export-scope" role="radiogroup" aria-label="Dates to add" hidden>
@@ -519,6 +531,14 @@
               <p class="field-help">Choose any community groups that apply.</p>
               <p id="event-groups-scope-note" class="field-help scope-note" hidden>Groups apply to every date of a repeating event, so they can’t be changed for just this date. <button id="edit-series-groups" class="inline-link-button" type="button">Edit the entire series instead</button></p>
               <div id="event-groups" class="group-options" aria-live="polite"></div>
+            </div>
+          </fieldset>
+
+          <fieldset class="form-section">
+            <legend>RSVP <span class="optional-label">optional</span></legend>
+            <div class="form-section-body">
+              <label class="check-row"><input id="event-rsvp-enabled" type="checkbox" /> <span>Let signed-in users RSVP</span></label>
+              <p class="field-help">When on, signed-in users can say whether they're attending, change their answer later, and see each other's RSVPs.</p>
             </div>
           </fieldset>
 

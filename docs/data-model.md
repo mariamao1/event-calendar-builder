@@ -201,6 +201,30 @@ Accounts are deliberately not referenced by events or revisions yet:
 submissions stay accountless (name, contact, management token), so linking
 or deleting an account never changes an event's audit trail.
 
+## RSVPs
+
+`event_revisions.rsvp_enabled` (migration `012_event_rsvps.sql`) is the
+optional per-event RSVP toggle, revisioned like the rest of the event
+content: enabling it follows the normal review flow, scoped future edits
+carry the editor's choice forward, and truncations keep the current value.
+Single-date edits cannot change it, and it is never part of a per-occurrence
+content override — RSVPs apply to the event, not to one date of a series.
+
+Answers live in `event_rsvps`, one row per `(event_id, user_id)` with a
+`status` of `attending` or `declined` plus a username snapshot and
+timestamps. Answering again overwrites the row, so users change their RSVP
+by answering again. `user_id` is the account id, or `operator` for the
+configured operator identity (which is not a `users` row), so it carries no
+foreign key to `users`; usernames cannot be renamed, so the snapshot never
+stales. `event_id` references `events(id) ON DELETE CASCADE`, so deleting
+an event removes its guest list with it.
+
+Visibility is enforced in the service, not the schema: the guest list (and
+the per-answer counts beside it) is served only for published events whose
+toggle is on, and the identities behind it only to signed-in accounts (or
+the event's creator/admin). Anonymous readers see nothing but the public
+counts on the event detail.
+
 ## Notification ledger and change behavior
 
 `notification_deliveries` is both an outbox and the durable record of an actual

@@ -22,6 +22,7 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/008_event_virtual_link.
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/009_event_attachments.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/010_event_files.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/011_user_accounts.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/012_event_rsvps.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/tests/001_initial_schema_smoke.sql
 ```
 
@@ -79,7 +80,8 @@ operator account configured by `ADMIN_USERNAME`/`ADMIN_PASSWORD_HASH` always
 has it, and it can be granted to registered accounts with
 `uv run calendar-api grant-admin <username>` (or by an admin via
 `PATCH /api/v1/admin/users/{id}`). Only admin accounts see the review queue
-and **Groups**.
+and **Groups**. When an event enables RSVP, signed-in users can say whether
+they're attending, change their answer later, and see each other's RSVPs.
 
 Use the **Month / Week / Day** switcher to change views. Week and day are
 time grids: timed events are positioned by their start/end times, overlapping

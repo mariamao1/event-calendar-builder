@@ -2024,6 +2024,7 @@ function renderEventDetail(view) {
     description.textContent = "";
     link.hidden = true;
     document.querySelector("#event-dialog-attachments").hidden = true;
+    document.querySelector("#event-dialog-rsvp").hidden = true;
     footnote.textContent = "";
     renderEventExport(view);
     renderSeriesSection(null);
@@ -2089,6 +2090,114 @@ function renderEventDetail(view) {
   renderSeriesSection(view);
   renderAdminPanel(view);
   renderEventActions(view);
+  renderEventRsvp(view);
+}
+
+// RSVP for account holders: when the event opts in, signed-in users answer
+// whether they are attending, change their answer later, and see each
+// other's RSVPs. The guest list stays behind sign-in; anonymous viewers only
+// ever see the counts.
+function setRsvpError(message) {
+  document.querySelector("#event-rsvp-error").textContent = message || "";
+}
+
+async function renderEventRsvp(view) {
+  const section = document.querySelector("#event-dialog-rsvp");
+  const summary = document.querySelector("#event-rsvp-summary");
+  const actions = document.querySelector("#event-rsvp-actions");
+  const signin = document.querySelector("#event-rsvp-signin");
+  const list = document.querySelector("#event-rsvp-list");
+  const { event } = view;
+  const eventId = eventDetail.eventId;
+  if (!event || !event.rsvp_enabled || !eventId) {
+    section.hidden = true;
+    return;
+  }
+  section.hidden = false;
+  setRsvpError("");
+  const counts = event.rsvp_counts || { attending: 0, declined: 0, total: 0 };
+  summary.textContent = counts.total === 0
+    ? "No RSVPs yet. Be the first to answer."
+    : `${counts.attending} attending${counts.declined ? ` · ${counts.declined} can't attend` : ""}`;
+  const token = sessionToken();
+  actions.hidden = !token;
+  signin.hidden = Boolean(token);
+  list.replaceChildren();
+  document.querySelector("#rsvp-attending-button").setAttribute("aria-pressed", "false");
+  document.querySelector("#rsvp-declined-button").setAttribute("aria-pressed", "false");
+  document.querySelector("#rsvp-withdraw-button").hidden = true;
+  if (!token) return;
+  try {
+    const guests = await jsonRequest(urlWithAccessToken(`/api/v1/events/${eventId}/rsvps`), {
+      headers: { Accept: "application/json", Authorization: `Bearer ${token}` },
+    });
+    if (eventDetail.eventId !== eventId) return;
+    for (const item of guests.items || []) {
+      const row = document.createElement("li");
+      row.className = "rsvp-row";
+      const name = document.createElement("span");
+      name.textContent = item.username;
+      const answer = document.createElement("span");
+      answer.className = "rsvp-answer";
+      answer.textContent = item.status === "attending" ? "Attending" : "Can't attend";
+      row.append(name, answer);
+      list.append(row);
+    }
+    const mine = (guests.items || []).find(
+      (item) => item.username === safeSessionGet("calendar-session-name"),
+    );
+    if (mine) {
+      document.querySelector(mine.status === "attending" ? "#rsvp-attending-button" : "#rsvp-declined-button")
+        .setAttribute("aria-pressed", "true");
+      document.querySelector("#rsvp-withdraw-button").hidden = false;
+    }
+  } catch (error) {
+    if (eventDetail.eventId !== eventId) return;
+    setRsvpError(error.message);
+  }
+}
+
+async function answerRsvp(status, button) {
+  const eventId = eventDetail.eventId;
+  const token = sessionToken();
+  if (!eventId || !token) return;
+  button.disabled = true;
+  setRsvpError("");
+  try {
+    await jsonRequest(urlWithAccessToken(`/api/v1/events/${eventId}/rsvp`), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ status }),
+    });
+    await loadEventDetail();
+  } catch (error) {
+    setRsvpError(error.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function withdrawRsvp(button) {
+  const eventId = eventDetail.eventId;
+  const token = sessionToken();
+  if (!eventId || !token) return;
+  button.disabled = true;
+  setRsvpError("");
+  try {
+    await jsonRequest(urlWithAccessToken(`/api/v1/events/${eventId}/rsvp`), {
+      method: "DELETE",
+      headers: { Accept: "application/json", Authorization: `Bearer ${token}` },
+    });
+    await loadEventDetail();
+  } catch (error) {
+    setRsvpError(error.message);
+  } finally {
+    button.disabled = false;
+  }
 }
 
 // "Add to your calendar": the published event as an .ics file (Apple
@@ -3455,6 +3564,7 @@ function resetEventForm() {
   // fresh form always starts with it visible and groups enabled.
   document.querySelector("#event-recurrence-frequency").closest("fieldset").hidden = false;
   for (const input of document.querySelectorAll("#event-groups input")) input.disabled = false;
+  document.querySelector("#event-rsvp-enabled").disabled = false;
   document.querySelector("#event-groups-scope-note").hidden = true;
   document.querySelector("#event-scope-note").hidden = true;
   document.querySelector("#event-scope-note").textContent = "";
@@ -3541,6 +3651,7 @@ function populateEventForm(event) {
   document.querySelector("#event-virtual-url").value = event.virtual_url || "";
   document.querySelector("#event-url").value = event.event_url || "";
   setAttachmentRows(event.attachments);
+  document.querySelector("#event-rsvp-enabled").checked = Boolean(event.rsvp_enabled);
   eventFormFiles = [...(event.files || [])];
   queuedEventFiles = [];
   document.querySelector("#event-file-input").value = "";
@@ -3608,6 +3719,8 @@ function applyScopedPrefill(series) {
   if (scope === "single") {
     note.textContent = `Editing only ${label}. The repeat schedule and groups stay with the series, and a later change to the series replaces this date's own details.`;
     for (const input of document.querySelectorAll("#event-groups input")) input.disabled = true;
+    // The RSVP toggle is series-level too, like groups.
+    document.querySelector("#event-rsvp-enabled").disabled = true;
     // Say why right where the admin tries to tick a group, and offer the
     // series-wide edit that can change them.
     document.querySelector("#event-groups-scope-note").hidden = false;
@@ -3672,6 +3785,7 @@ function buildEventPayload() {
     virtual_url: document.querySelector("#event-virtual-url").value.trim() || null,
     event_url: document.querySelector("#event-url").value.trim() || null,
     attachments: collectAttachments(),
+    rsvp_enabled: document.querySelector("#event-rsvp-enabled").checked,
     is_all_day: allDay,
     timezone,
     recurrence_rule: buildRecurrenceRule(allDay, timezone),
@@ -4631,6 +4745,15 @@ function bindControls() {
     groupSlugEdited = event.target.value !== "";
   });
   document.querySelector("#copy-event-link-button").addEventListener("click", copyEventLink);
+  document.querySelector("#rsvp-attending-button").addEventListener("click", (event) => {
+    answerRsvp("attending", event.currentTarget);
+  });
+  document.querySelector("#rsvp-declined-button").addEventListener("click", (event) => {
+    answerRsvp("declined", event.currentTarget);
+  });
+  document.querySelector("#rsvp-withdraw-button").addEventListener("click", (event) => {
+    withdrawRsvp(event.currentTarget);
+  });
   for (const radio of document.querySelectorAll('input[name="event-export-scope"]')) {
     radio.addEventListener("change", () => {
       eventDetail.exportScope = radio.value;

@@ -2422,6 +2422,50 @@ dialog::backdrop {
   line-height: 1.5;
 }
 
+/* RSVP answers from signed-in users */
+.event-rsvp {
+  margin-top: 22px;
+}
+
+.event-rsvp[hidden],
+.event-rsvp-actions[hidden],
+#event-rsvp-signin[hidden],
+#rsvp-withdraw-button[hidden] {
+  display: none;
+}
+
+.event-rsvp-summary {
+  margin: 8px 0 0;
+}
+
+.event-rsvp-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.rsvp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.rsvp-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.rsvp-answer {
+  font-size: 0.8rem;
+  opacity: 0.75;
+}
+
 /* Adding an event, or the whole calendar, to the viewer's calendar app */
 .event-export {
   margin-top: 22px;

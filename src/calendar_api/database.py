@@ -93,6 +93,31 @@ class SQLiteDatabase:
                 connection.execute(
                     "ALTER TABLE event_revisions ADD COLUMN attachments TEXT"
                 )
+            if "rsvp_enabled" not in revision_columns:
+                connection.execute(
+                    "ALTER TABLE event_revisions ADD COLUMN rsvp_enabled INTEGER "
+                    "NOT NULL DEFAULT 0 CHECK (rsvp_enabled IN (0, 1))"
+                )
+            _migrate_event_rsvps(connection)
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS event_rsvps (
+                  event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+                  user_id TEXT NOT NULL,
+                  username TEXT NOT NULL CHECK (trim(username) <> ''),
+                  status TEXT NOT NULL CHECK (status IN ('attending', 'declined')),
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL,
+                  PRIMARY KEY (event_id, user_id)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS local_event_rsvps_user_idx
+                  ON event_rsvps(user_id)
+                """
+            )
             _migrate_review_actions(connection, schema)
             _migrate_occurrence_overrides(connection)
             _migrate_groups(connection, schema)
@@ -204,6 +229,33 @@ def _migrate_occurrence_overrides(connection: sqlite3.Connection) -> None:
                AND cancellation_reason = 'deleted single occurrence'
             """
         )
+
+
+def _migrate_event_rsvps(connection: sqlite3.Connection) -> None:
+    """Replace a foreign `event_rsvps` table with the canonical RSVP shape.
+
+    A database that once ran an incompatible RSVP implementation may carry
+    an `event_rsvps` table with different columns (per-occurrence answers
+    instead of per-event attending/declined rows). `CREATE TABLE IF NOT
+    EXISTS` would keep that table and every RSVP read would fail with
+    `no such column`. Move it aside to `event_rsvps_legacy` — its rows are
+    preserved but no longer consulted — so the canonical table below is
+    created fresh. Its answers cannot be carried over: they name occurrences
+    and use a different vocabulary than this implementation.
+    """
+    existing = {row[1] for row in connection.execute("PRAGMA table_info(event_rsvps)")}
+    if not existing or {"event_id", "user_id", "username", "status"} <= existing:
+        return
+    legacy_exists = (
+        connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE name = 'event_rsvps_legacy'"
+        ).fetchone()
+        is not None
+    )
+    if legacy_exists:
+        connection.execute("DROP TABLE event_rsvps")
+    else:
+        connection.execute("ALTER TABLE event_rsvps RENAME TO event_rsvps_legacy")
 
 
 def _migrate_groups(connection: sqlite3.Connection, schema: str) -> None:

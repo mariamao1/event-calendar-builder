@@ -136,6 +136,10 @@ Public routes:
 | `POST` | `/api/v1/events/{event_id}/occurrences/{occurrence_id}/cancel` | Cancel one date or future dates, kept visible, marked cancelled |
 | `DELETE` | `/api/v1/events/{event_id}/occurrences/{occurrence_id}` | Delete one date or future dates from the calendar |
 | `POST` | `/api/v1/events/{event_id}/occurrences/{occurrence_id}/restore` | Restore one date that was cancelled or deleted on its own |
+| `POST`/`PUT` | `/api/v1/events/{event_id}/rsvp` (also `POST .../rsvps`) | RSVP as the signed-in user; answering again changes the answer |
+| `GET` | `/api/v1/events/{event_id}/rsvps` | Every RSVP with per-answer counts (signed-in accounts, the creator, or an admin) |
+| `GET` | `/api/v1/events/{event_id}/rsvp` | The caller's own RSVP answer (`null` when unanswered) |
+| `DELETE` | `/api/v1/events/{event_id}/rsvp` | Withdraw the caller's RSVP answer |
 
 Every group carries a `color` (`#rrggbb`, normalized to lowercase), returned by
 the group lists and on each group embedded in calendar, event, and admin
@@ -191,6 +195,35 @@ around the requested one, up to six `upcoming` dates with `upcoming_count`, and
 `skipped` dates (deleted on their own, restorable). Occurrence objects carry
 `instance_exception` (`"cancelled"`, `"skipped"`, or `null`). Submitter
 details are never included.
+
+## RSVP
+
+An event opts in with the revisioned `rsvp_enabled` toggle (off by default),
+set in the event form like any other content and carried through the normal
+review flow. When it is on, signed-in users answer whether they are attending
+and see each other's answers; anonymous link holders only ever see the counts.
+
+- `POST /api/v1/events/{event_id}/rsvp` (also `PUT` there, or `POST .../rsvps`)
+  creates or changes the caller's answer. The body is
+  `{"status": "attending"}` (`"declined"` to decline) or equivalently
+  `{"attending": true}` (`false` to decline); common spellings (`yes`/`no`,
+  `going`, `accepted`/`decline`, `not_attending`, …) normalize to the two
+  canonical answers, and anything else reports `422`. One row per
+  (event, user): answering again changes the answer. RSVPs apply to the
+  event, not to one date of a series.
+- `GET /api/v1/events/{event_id}/rsvps` lists every RSVP
+  (`{user_id, username, status, attending, created_at, updated_at}`, ordered
+  by username) with `counts` (`attending`/`declined`/`total`). Any signed-in
+  account sees it, as do the event's creator (via `X-Event-Management-Token`)
+  and admins; anything else is `401`.
+- `GET /api/v1/events/{event_id}/rsvp` returns the caller's own answer
+  (`null` when they have not answered); `DELETE` on the same path withdraws
+  it (`404` when there is nothing to withdraw).
+- Writing or listing against an unpublished, deleted, or missing event
+  reports `404`; against an event whose toggle is off, `409`.
+- The single-event read carries `rsvp_enabled` and `rsvp_counts`
+  (`attending`/`declined`/`total`), so the detail view shows the tally to
+  everyone and the guest list to signed-in users.
 
 Removal distinguishes cancellation from deletion. Cancelling
 (`POST /api/v1/events/{event_id}/cancel`) means "this event is cancelled": the
