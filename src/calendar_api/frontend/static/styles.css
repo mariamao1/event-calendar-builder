@@ -793,6 +793,81 @@ dialog::backdrop {
   overflow-wrap: anywhere;
 }
 
+.event-attachments {
+  margin-top: 21px;
+}
+
+.event-attachments[hidden] {
+  display: none;
+}
+
+.attachment-rows {
+  display: grid;
+  gap: 4px;
+}
+
+.attachment-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.attachment-item {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+}
+
+.attachment-image {
+  max-width: 100%;
+  max-height: 320px;
+  border-radius: 10px;
+  object-fit: contain;
+}
+
+.attachment-link {
+  color: var(--forest);
+  font-size: 0.8rem;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.attachment-link:hover {
+  text-decoration: underline;
+}
+
+.file-attachments {
+  margin-top: 14px;
+}
+
+.file-list {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.file-list:empty {
+  display: none;
+}
+
+.file-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.file-meta {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.file-remove {
+  padding: 2px 10px;
+  font-size: 0.72rem;
+}
+
 .compact-dialog {
   padding: 20px;
 }

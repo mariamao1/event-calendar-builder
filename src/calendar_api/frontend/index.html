@@ -167,6 +167,10 @@
           Event website
           <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 13 13.5 6.5M9 6.5h4.5V11M13 14H6V7h3" /></svg>
         </a>
+        <section id="event-dialog-attachments" class="event-attachments" aria-labelledby="event-attachments-heading" hidden>
+          <h3 id="event-attachments-heading" class="event-section-heading">Attachments</h3>
+          <div id="event-attachment-list" class="attachment-list"></div>
+        </section>
         <section id="event-dialog-export" class="event-export" aria-labelledby="event-export-heading" hidden>
           <h3 id="event-export-heading" class="event-section-heading">Add to your calendar</h3>
           <div id="event-export-scope" class="event-export-scope" role="radiogroup" aria-label="Dates to add" hidden>
@@ -364,6 +368,10 @@
           Event website
           <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 13 13.5 6.5M9 6.5h4.5V11M13 14H6V7h3" /></svg>
         </a>
+        <section id="review-detail-attachments" class="event-attachments" aria-label="Attachments" hidden>
+          <h3 class="event-section-heading">Attachments</h3>
+          <div id="review-attachment-list" class="attachment-list"></div>
+        </section>
         <div id="review-detail-history" class="review-history"></div>
         <label class="field-label review-note-label">Review note<textarea id="review-note" rows="2" maxlength="4000" placeholder="Optional note recorded with this decision"></textarea></label>
         <p id="review-detail-error" class="form-error" role="alert"></p>
@@ -399,6 +407,35 @@
               <label class="field-label field-wide"><span class="field-heading">Title <span aria-hidden="true">*</span></span><input id="event-title" maxlength="240" required /></label>
               <label class="field-label field-wide">Description<textarea id="event-description" maxlength="20000" rows="5"></textarea></label>
               <label class="field-label field-wide">Event website<input id="event-url" type="url" maxlength="2000" placeholder="https://…" /></label>
+            </div>
+          </fieldset>
+
+          <fieldset class="form-section">
+            <legend>Attachments <span class="optional-label">optional</span></legend>
+            <div class="form-section-body">
+              <p class="field-help">Up to 3 files by link, such as a flyer, an agenda, or a graphic for the event. Image links also show as pictures on the event.</p>
+              <div id="event-attachments" class="attachment-rows">
+                <div class="attachment-row field-grid">
+                  <label class="field-label">File link<input id="event-attachment-0-url" type="url" maxlength="2000" placeholder="https://…" /></label>
+                  <label class="field-label">Label<input id="event-attachment-0-name" maxlength="120" placeholder="Flyer" /></label>
+                </div>
+                <div class="attachment-row field-grid">
+                  <label class="field-label">File link<input id="event-attachment-1-url" type="url" maxlength="2000" placeholder="https://…" /></label>
+                  <label class="field-label">Label<input id="event-attachment-1-name" maxlength="120" placeholder="Agenda" /></label>
+                </div>
+                <div class="attachment-row field-grid">
+                  <label class="field-label">File link<input id="event-attachment-2-url" type="url" maxlength="2000" placeholder="https://…" /></label>
+                  <label class="field-label">Label<input id="event-attachment-2-name" maxlength="120" placeholder="Map" /></label>
+                </div>
+              </div>
+              <div class="file-attachments">
+                <div id="event-file-list" class="file-list" aria-live="polite"></div>
+                <label class="field-label">From your device
+                  <input id="event-file-input" type="file" multiple accept=".png,.jpg,.jpeg,.gif,.webp,.svg,.pdf" />
+                </label>
+                <p class="field-help">Images and PDFs up to 5 MB each. Uploaded files and links share the limit of 3 attachments.</p>
+                <p id="event-file-error" class="form-error" role="alert"></p>
+              </div>
             </div>
           </fieldset>
 

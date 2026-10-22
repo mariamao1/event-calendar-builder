@@ -30,7 +30,14 @@ The event's moderation state is
 associations, timing, descriptive content, and recurrence are all revisioned.
 Descriptive content includes an optional event location: a physical place
 (`location_name`, `location_address`), an online link (`virtual_url`, an
-absolute http(s) URL), both, or neither.
+absolute http(s) URL), both, or neither. It also includes up to three
+attachments: linked files (`attachments`, a JSON array of `{url, name}`
+objects with absolute http(s) URLs, for a flyer, an agenda, or a graphic
+for the event) and files uploaded from the creator's own machine
+(`event_files`, stored by the server). Uploaded files belong to the event
+rather than to a revision and take effect immediately for the creator or
+an admin, like scoped single-date edits; together with the current
+revision's link attachments they share one cap of three per event.
 That prevents an edit from bypassing review.
 
 An edit always creates a new `pending` revision and moves
@@ -93,7 +100,7 @@ occurrence row across approved edits.
 Scoped single/future edits diverge individual occurrences from the published
 series. `event_occurrences.content_override` holds a JSON object with any
 subset of the descriptive fields (`title`, `description`, `location_name`,
-`location_address`, `virtual_url`, `event_url`); reads merge it over the published revision
+`location_address`, `virtual_url`, `event_url`, `attachments`); reads merge it over the published revision
 and report diverged dates via `has_override`. Timing divergence reuses the
 per-occurrence start/end columns with `is_exception`. A scoped cancellation
 sets `event_occurrences.instance_cancelled` instead: the date stays visible,

@@ -16,7 +16,60 @@ CONTENT_OVERRIDE_FIELDS = (
     "location_address",
     "virtual_url",
     "event_url",
+    "attachments",
 )
+
+
+def normalize_content_value(value: Any) -> Any:
+    """Plain-data view of an override candidate for comparison and storage.
+
+    Payload models dump to the same {"url", "name"} dicts the service layer
+    stores, so an unchanged attachment list compares equal to its revision
+    and serializes back to JSON without a custom encoder.
+    """
+    dump = getattr(value, "model_dump", None)
+    if callable(dump):
+        return normalize_content_value(dump())
+    if isinstance(value, dict):
+        return {key: normalize_content_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [normalize_content_value(item) for item in value]
+    return value
+
+
+def parse_attachments(raw: Any) -> list[dict]:
+    """Parse a stored attachments blob into {"url", "name"} dicts."""
+    if not raw:
+        return []
+    if isinstance(raw, list):
+        items = raw
+    elif isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            return []
+        items = parsed if isinstance(parsed, list) else []
+    else:
+        return []
+    result = []
+    for item in items:
+        if isinstance(item, dict):
+            url = (item.get("url") or "").strip()
+            name = (item.get("name") or "").strip()
+        else:
+            url = (getattr(item, "url", "") or "").strip()
+            name = (getattr(item, "name", "") or "").strip()
+        if url:
+            result.append({"url": url, "name": name})
+    return result
+
+
+def attachments_json(value: Any) -> str | None:
+    """Canonical stored form of an attachment list (None when empty)."""
+    items = parse_attachments(value)
+    if not items:
+        return None
+    return json.dumps(items, sort_keys=True)
 
 # Single-date removals that persist across later series-wide edits, stored in
 # event_occurrences.instance_exception. "cancelled" keeps the date visible,
@@ -36,8 +89,8 @@ def build_content_override(payload: Any, published: dict) -> str | None:
     """
     override = {}
     for field in CONTENT_OVERRIDE_FIELDS:
-        new_value = getattr(payload, field, None) or None
-        old_value = published.get(field) or None
+        new_value = normalize_content_value(getattr(payload, field, None)) or None
+        old_value = normalize_content_value(published.get(field)) or None
         if (new_value or None) != (old_value or None):
             override[field] = new_value
     if not override:

@@ -1469,6 +1469,178 @@ function onlineLinkRow(value) {
   return metaRow("Online", link);
 }
 
+// Linked files on an event (at most ATTACHMENT_ROWS). An image link renders
+// as a picture so a graphic for the event is visible at a glance; every
+// other file renders as a labelled link opening in a new tab.
+const ATTACHMENT_ROWS = 3;
+const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif"]);
+
+function isImageAttachment(value) {
+  try {
+    const path = new URL(value).pathname.toLowerCase();
+    const extension = path.split(".").pop();
+    return IMAGE_EXTENSIONS.has(extension);
+  } catch (_) {
+    return false;
+  }
+}
+
+function attachmentRow(attachment) {
+  const href = safeEventUrl(attachment?.url);
+  if (!href) return null;
+  const item = document.createElement("div");
+  item.className = "attachment-item";
+  if (isImageAttachment(href)) {
+    const image = document.createElement("img");
+    image.className = "attachment-image";
+    image.src = href;
+    image.alt = attachment.name || "Event image";
+    image.loading = "lazy";
+    item.append(image);
+  }
+  const link = document.createElement("a");
+  link.className = "attachment-link";
+  link.href = href;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.textContent = attachment.name || href;
+  item.append(link);
+  return item;
+}
+
+function renderAttachmentList(list, attachments) {
+  list.replaceChildren(
+    ...(attachments || []).map(attachmentRow).filter(Boolean),
+  );
+}
+
+// Files uploaded from the creator's own machine. They are served back by
+// this server, so their links carry the calendar link token like the
+// calendar's own export URLs.
+function eventFileUrl(fileId) {
+  return urlWithAccessToken(`/api/v1/files/${fileId}`);
+}
+
+function formatFileSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function fileAttachmentRow(file, { onRemove = null } = {}) {
+  const item = document.createElement("div");
+  item.className = "attachment-item";
+  if (file.is_image) {
+    const image = document.createElement("img");
+    image.className = "attachment-image";
+    image.src = eventFileUrl(file.file_id);
+    image.alt = file.name;
+    image.loading = "lazy";
+    item.append(image);
+  }
+  const row = document.createElement("div");
+  row.className = "file-row";
+  const link = document.createElement("a");
+  link.className = "attachment-link";
+  link.href = eventFileUrl(file.file_id);
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.textContent = file.name;
+  if (!file.is_image) link.download = file.name;
+  const meta = document.createElement("span");
+  meta.className = "file-meta";
+  meta.textContent = formatFileSize(file.size);
+  row.append(link, meta);
+  if (onRemove) {
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "quiet-button danger-button file-remove";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", () => onRemove(file));
+    row.append(remove);
+  }
+  item.append(row);
+  return item;
+}
+
+async function uploadEventFiles(eventId, managementToken, files) {
+  const body = new FormData();
+  for (const file of files) body.append("files", file, file.name);
+  const response = await fetch(`/api/v1/events/${eventId}/files`, {
+    method: "POST",
+    headers: authenticatedHeaders(managementToken),
+    body,
+  });
+  const result = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(apiErrorMessage(result, `Upload failed (${response.status})`));
+  }
+  return result.files;
+}
+
+// Files already on the event being edited, plus files chosen for an event
+// that does not exist yet (uploaded right after it is created).
+let eventFormFiles = [];
+let queuedEventFiles = [];
+
+function setFileError(message) {
+  document.querySelector("#event-file-error").textContent = message || "";
+}
+
+function countFilledLinkRows() {
+  let count = 0;
+  for (let index = 0; index < ATTACHMENT_ROWS; index++) {
+    if (document.querySelector(`#event-attachment-${index}-url`).value.trim()) count++;
+  }
+  return count;
+}
+
+function renderFormFiles() {
+  const list = document.querySelector("#event-file-list");
+  list.replaceChildren();
+  for (const file of eventFormFiles) {
+    list.append(fileAttachmentRow(file, { onRemove: removeUploadedFile }));
+  }
+  for (const file of queuedEventFiles) {
+    const item = document.createElement("div");
+    item.className = "attachment-item";
+    const row = document.createElement("div");
+    row.className = "file-row";
+    const name = document.createElement("span");
+    name.className = "attachment-link";
+    name.textContent = `${file.name} (attaches when the event is saved)`;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "quiet-button danger-button file-remove";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", () => {
+      queuedEventFiles = queuedEventFiles.filter((entry) => entry !== file);
+      renderFormFiles();
+    });
+    row.append(name, remove);
+    item.append(row);
+    list.append(item);
+  }
+}
+
+async function removeUploadedFile(file) {
+  setFileError("");
+  try {
+    const response = await fetch(
+      `/api/v1/events/${eventFormMode.eventId}/files/${file.file_id}`,
+      { method: "DELETE", headers: authenticatedHeaders(eventFormMode.managementToken) },
+    );
+    if (!response.ok) {
+      const result = await response.json().catch(() => null);
+      throw new Error(apiErrorMessage(result, `Remove failed (${response.status})`));
+    }
+    eventFormFiles = eventFormFiles.filter((entry) => entry.file_id !== file.file_id);
+    renderFormFiles();
+  } catch (error) {
+    setFileError(error.message);
+  }
+}
+
 const WEEKDAY_CODES = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
 const RECURRENCE_UNITS = {
   DAILY: ["day", "days"],
@@ -1851,6 +2023,7 @@ function renderEventDetail(view) {
     meta.hidden = true;
     description.textContent = "";
     link.hidden = true;
+    document.querySelector("#event-dialog-attachments").hidden = true;
     footnote.textContent = "";
     renderEventExport(view);
     renderSeriesSection(null);
@@ -1894,6 +2067,16 @@ function renderEventDetail(view) {
   const safeUrl = safeEventUrl(shown("event_url"));
   link.hidden = !safeUrl;
   if (safeUrl) link.href = safeUrl;
+
+  const attachments = shown("attachments") || [];
+  const files = event.files || [];
+  const attachmentSection = document.querySelector("#event-dialog-attachments");
+  attachmentSection.hidden = attachments.length === 0 && files.length === 0;
+  if (!attachmentSection.hidden) {
+    const list = document.querySelector("#event-attachment-list");
+    renderAttachmentList(list, attachments);
+    for (const file of files) list.append(fileAttachmentRow(file));
+  }
 
   const published = event.reviewed_at
     ? formatSubmittedAt(event.reviewed_at)
@@ -3257,6 +3440,11 @@ function bindAddressSuggestions() {
 function resetEventForm() {
   eventForm.reset();
   closeAddressSuggestions();
+  eventFormFiles = [];
+  queuedEventFiles = [];
+  document.querySelector("#event-file-input").value = "";
+  document.querySelector("#event-file-list").replaceChildren();
+  setFileError("");
   document.querySelector("#event-form-id").value = "";
   document.querySelector("#recurrence-date-list").replaceChildren();
   timezoneOptions(state.timezone);
@@ -3324,6 +3512,26 @@ async function openCreateEventForm() {
   await loadEventGroups();
 }
 
+function setAttachmentRows(attachments) {
+  for (let index = 0; index < ATTACHMENT_ROWS; index++) {
+    const item = (attachments || [])[index] || {};
+    document.querySelector(`#event-attachment-${index}-url`).value = item.url || "";
+    document.querySelector(`#event-attachment-${index}-name`).value = item.name || "";
+  }
+}
+
+function collectAttachments() {
+  const result = [];
+  for (let index = 0; index < ATTACHMENT_ROWS; index++) {
+    const url = document.querySelector(`#event-attachment-${index}-url`).value.trim();
+    const name = document.querySelector(`#event-attachment-${index}-name`).value.trim();
+    if (!url && !name) continue;
+    if (!url) throw new Error("Every attachment needs a file link.");
+    result.push(name ? { url, name } : { url });
+  }
+  return result;
+}
+
 function populateEventForm(event) {
   document.querySelector("#event-form-id").value = event.event_id;
   document.querySelector("#event-title").value = event.title || "";
@@ -3332,6 +3540,12 @@ function populateEventForm(event) {
   document.querySelector("#event-location-address").value = event.location_address || "";
   document.querySelector("#event-virtual-url").value = event.virtual_url || "";
   document.querySelector("#event-url").value = event.event_url || "";
+  setAttachmentRows(event.attachments);
+  eventFormFiles = [...(event.files || [])];
+  queuedEventFiles = [];
+  document.querySelector("#event-file-input").value = "";
+  setFileError("");
+  renderFormFiles();
   document.querySelector("#event-all-day").checked = event.is_all_day;
   timezoneOptions(event.timezone || state.timezone);
   if (event.is_all_day) {
@@ -3409,6 +3623,7 @@ function applyScopedPrefill(series) {
     document.querySelector("#event-location-address").value = timing.location_address || "";
     document.querySelector("#event-virtual-url").value = timing.virtual_url || "";
     document.querySelector("#event-url").value = timing.event_url || "";
+    setAttachmentRows(timing.attachments);
   }
   const timezone = series.timezone || state.timezone;
   timezoneOptions(timezone);
@@ -3456,6 +3671,7 @@ function buildEventPayload() {
     location_address: document.querySelector("#event-location-address").value.trim() || null,
     virtual_url: document.querySelector("#event-virtual-url").value.trim() || null,
     event_url: document.querySelector("#event-url").value.trim() || null,
+    attachments: collectAttachments(),
     is_all_day: allDay,
     timezone,
     recurrence_rule: buildRecurrenceRule(allDay, timezone),
@@ -3472,6 +3688,23 @@ function buildEventPayload() {
     if (payload[field] && !safeEventUrl(payload[field])) {
       throw new Error(`${label} must be a complete http(s) URL.`);
     }
+  }
+
+  if (payload.attachments.length > ATTACHMENT_ROWS) {
+    throw new Error(`At most ${ATTACHMENT_ROWS} attachments are allowed.`);
+  }
+  for (const attachment of payload.attachments) {
+    if (!safeEventUrl(attachment.url)) {
+      throw new Error("Attachment links must be complete http(s) URLs.");
+    }
+  }
+  if (
+    payload.attachments.length + eventFormFiles.length + queuedEventFiles.length
+    > ATTACHMENT_ROWS
+  ) {
+    throw new Error(
+      `At most ${ATTACHMENT_ROWS} attachments are allowed (files and links combined).`,
+    );
   }
 
   if (allDay) {
@@ -3563,6 +3796,18 @@ async function submitEventForm(event) {
     const token = result.management_token || eventFormMode.managementToken;
     rememberCreatorToken(result.event_id, token);
     showEventSuccess(result, token);
+    if (!editing && queuedEventFiles.length) {
+      // A new event did not exist when its files were chosen; attach them
+      // now that it does. The event itself is already saved.
+      try {
+        await uploadEventFiles(result.event_id, token, queuedEventFiles);
+        queuedEventFiles = [];
+      } catch (error) {
+        document.querySelector("#event-success-message").textContent +=
+          ` The event was saved, but its files could not be attached: ${error.message}` +
+          " Use your edit link to try again.";
+      }
+    }
     if (queueEdit) {
       await refreshReviewQueue();
       if (reviewDetail && reviewDetail.eventId === result.event_id) {
@@ -3953,6 +4198,16 @@ function renderReviewDetail(detail, revision) {
   link.hidden = !safeUrl;
   if (safeUrl) link.href = safeUrl;
 
+  const reviewAttachments = revision.attachments || [];
+  const reviewFiles = detail.files || [];
+  const reviewAttachmentSection = document.querySelector("#review-detail-attachments");
+  reviewAttachmentSection.hidden = reviewAttachments.length === 0 && reviewFiles.length === 0;
+  if (!reviewAttachmentSection.hidden) {
+    const list = document.querySelector("#review-attachment-list");
+    renderAttachmentList(list, reviewAttachments);
+    for (const file of reviewFiles) list.append(fileAttachmentRow(file));
+  }
+
   const history = document.querySelector("#review-detail-history");
   history.replaceChildren();
   const prior = (detail.revisions || []).filter((item) => item.id !== revision.id);
@@ -4321,6 +4576,32 @@ function bindControls() {
   document.querySelector("#add-recurrence-date").addEventListener("click", () => addRecurrenceDate());
   document.querySelector("#submitter-channel").addEventListener("change", updateSubmitterContactType);
   eventForm.addEventListener("submit", submitEventForm);
+  document.querySelector("#event-file-input").addEventListener("change", async (inputEvent) => {
+    const chosen = [...inputEvent.target.files];
+    inputEvent.target.value = "";
+    if (!chosen.length) return;
+    setFileError("");
+    const room = ATTACHMENT_ROWS
+      - countFilledLinkRows() - eventFormFiles.length - queuedEventFiles.length;
+    if (chosen.length > room) {
+      setFileError(`At most ${ATTACHMENT_ROWS} attachments are allowed (files and links combined).`);
+      return;
+    }
+    if (eventFormMode.eventId) {
+      try {
+        const uploaded = await uploadEventFiles(
+          eventFormMode.eventId, eventFormMode.managementToken, chosen,
+        );
+        eventFormFiles.push(...uploaded);
+      } catch (error) {
+        setFileError(error.message);
+      }
+      renderFormFiles();
+    } else {
+      queuedEventFiles.push(...chosen);
+      renderFormFiles();
+    }
+  });
   document.querySelector("#event-success-close").addEventListener("click", () => eventFormDialog.close());
   document.querySelector("#copy-management-link").addEventListener("click", async () => {
     const input = document.querySelector("#management-link");

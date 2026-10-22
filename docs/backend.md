@@ -40,7 +40,8 @@ Its semantics are:
   all active groups. Unknown and inactive slugs return `422`, making frontend
   typos visible.
 - `q` (also accepted as `search`/`query`) narrows to events whose title,
-  description, or location (place name, street address, or online link)
+  description, location (place name, street address, or online link), or
+  attachment links and labels
   contains every whitespace-separated token,
   case-insensitively. Blank means no filtering. It combines with `group`
   (both apply), and per-date content edits are found by their own wording.
@@ -125,6 +126,10 @@ Public routes:
 | `POST` | `/api/v1/events` | Submit revision 1 for review |
 | `GET` | `/api/v1/events/{event_id}/manage` | Load creator-owned editable content |
 | `POST` | `/api/v1/events/{event_id}/revisions` | Submit a creator-owned edit for review (or a scoped edit; see below) |
+| `POST` | `/api/v1/events/{event_id}/files` | Upload files from the creator's own machine (creator or admin, multipart `files`) |
+| `GET` | `/api/v1/events/{event_id}/files` | List an event's uploaded files |
+| `GET` | `/api/v1/files/{file_id}` | Download one uploaded file |
+| `DELETE` | `/api/v1/events/{event_id}/files/{file_id}` | Remove an uploaded file (creator or admin) |
 | `POST` | `/api/v1/events/{event_id}/cancel` | Cancel an event (creator or admin); it stays visible, marked cancelled (or a scoped cancel; see below) |
 | `DELETE` | `/api/v1/events/{event_id}` | Delete an event (creator or admin); it no longer exists (or a scoped delete; see below) |
 | `POST` | `/api/v1/events/{event_id}/occurrences/{occurrence_id}/edit` | Edit one date (`scope=single`, default) or future dates (`scope=future`) |
@@ -173,9 +178,13 @@ Admin routes (require admin authentication, see below):
 | `DELETE` | `/api/v1/admin/events/{event_id}` | Admin-only alias of event deletion |
 
 The single-event read powers the event detail view. Besides the published
-revision and its active groups it returns `recurrence_dates` and `occurrence`
+revision (including up to three linked file `attachments`, each a
+`{url, name}` object; image links render as pictures in the detail view)
+and its active groups it returns `recurrence_dates` and `occurrence`
 (the requested scheduled date, or `null` if none was requested or it is no
-longer scheduled). It also returns `series`, which is `null` for one-off events.
+longer scheduled), plus `files` (uploaded-file metadata: `file_id`,
+`name`, `content_type`, `size`, `is_image`; bytes come from
+`GET /api/v1/files/{file_id}`). It also returns `series`, which is `null` for one-off events.
 For repeating events, `series` holds the `previous`/`next` scheduled dates
 around the requested one, up to six `upcoming` dates with `upcoming_count`, and
 `coverage_end`, where the materialized window ends, plus up to 20 upcoming
@@ -211,7 +220,36 @@ published content is exported.
   so an entry already in someone's calendar updates. UIDs are stable
   (`<event_id>@event-calendar` for an event or series,
   `<occurrence_id>@event-calendar` for a single date), so re-importing
-  updates the same entry.
+  updates the same entry. Linked file attachments export as `ATTACH`
+  properties (one per attachment, including per-date overrides). Uploaded
+  files do not export: the `.ics` carries only link attachments.
+
+## Event file uploads
+
+Creators can attach files from their own machine (a photo, a flyer, an
+agenda) instead of only linking to files hosted elsewhere. The form offers
+a file picker beside the link rows; on a new event the chosen files upload
+right after the event is created, and on an edit they upload at once.
+
+Mechanics:
+
+- `POST /api/v1/events/{event_id}/files` takes multipart `files` (several
+  at once) and needs the creator token or admin credentials. Each file is
+  validated by extension: images (`png`, `jpg`, `jpeg`, `gif`, `webp`,
+  `svg`) and `pdf`, at most 5 MB. Uploads share the submission rate limit.
+- Uploaded files and link attachments share one cap of 3 per event:
+  uploading past it reports `422`, as does submitting link attachments
+  that would push a file-carrying event over it (including future-scope
+  edits, which carry new content forward).
+- Files belong to the event, not to a revision, and take effect
+  immediately for the creator or an admin, like scoped single-date edits.
+  They are never part of a pending revision, so approving or rejecting an
+  edit leaves them alone.
+- `GET /api/v1/files/{file_id}` serves the bytes with their content type,
+  `nosniff`, and a download disposition for non-images. Published events'
+  files need only the calendar link; files of an event still awaiting
+  review need its creator token or admin credentials instead, and files of
+  a deleted event read as missing.
 - `GET /api/v1/events/{event_id}/google` redirects to Google Calendar's
   event template. A series passes its rule and timezone; Google's template
   cannot carry per-date exceptions, which the `.ics` export does.

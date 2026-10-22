@@ -7,11 +7,12 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Annotated, Literal
+from urllib.parse import quote
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dateutil.relativedelta import relativedelta
-from fastapi import Depends, FastAPI, Header, Query, Request, Response, status
+from fastapi import Depends, FastAPI, File, Header, Query, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import (
     FileResponse,
@@ -31,6 +32,7 @@ from .errors import ApiError, ConflictError, NotFoundError, ValidationError
 from .occurrence_scopes import CONTENT_OVERRIDE_FIELDS, apply_content_override
 from .rate_limit import RateLimiter
 from .schemas import (
+    MAX_ATTACHMENT_BYTES,
     EventRevisionInput,
     GroupCreate,
     GroupUpdate,
@@ -779,6 +781,165 @@ def create_app(
                 future_months=settings.materialization_future_months,
             )
         return {**created, **approved}
+
+    def is_event_editor(
+        connection: object,
+        event_id: UUID,
+        management_token: str | None,
+        x_admin_key: str | None,
+        authorization: str | None,
+    ) -> bool:
+        """Whether the caller may manage one event (admin or its creator)."""
+        if admin_identity(x_admin_key, authorization) is not None:
+            return True
+        return service.event_management_token_matches(
+            connection, event_id, management_token
+        )
+
+    @app.post(
+        "/api/v1/events/{event_id}/files",
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def upload_event_files(
+        event_id: UUID,
+        request: Request,
+        files: Annotated[list[UploadFile], File()],
+        x_event_management_token: Annotated[
+            str | None, Header(alias="X-Event-Management-Token")
+        ] = None,
+        x_admin_key: Annotated[str | None, Header()] = None,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> dict:
+        """Attach files chosen on the creator's own machine to an event.
+
+        Accepts images (png, jpg, gif, webp, svg) and PDFs up to 5 MB each.
+        Uploaded files and link attachments share one cap of 3 per event.
+        Files belong to the event and take effect immediately for its
+        creator or an admin, like scoped single-date edits.
+        """
+        require_event_editor(
+            event_id, x_event_management_token, x_admin_key, authorization
+        )
+        enforce_rate_limit(
+            request,
+            scope="submit",
+            limit=settings.submit_rate_limit_max,
+            window_seconds=settings.submit_rate_limit_window_seconds,
+        )
+        if not files:
+            raise ValidationError("at least one file is required")
+        stored = []
+        with database.transaction() as connection:
+            for upload in files:
+                # Bound memory: read one byte past the cap to detect overflow
+                # without loading an unbounded body.
+                data = await upload.read(MAX_ATTACHMENT_BYTES + 1)
+                stored.append(
+                    service.upload_event_file(
+                        connection,
+                        event_id,
+                        upload.filename,
+                        upload.content_type,
+                        data,
+                    )
+                )
+        return {"event_id": event_id, "files": stored}
+
+    @app.get("/api/v1/events/{event_id}/files", dependencies=[link])
+    def event_files(
+        event_id: UUID,
+        x_event_management_token: Annotated[
+            str | None, Header(alias="X-Event-Management-Token")
+        ] = None,
+        x_admin_key: Annotated[str | None, Header()] = None,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> dict:
+        """List an event's uploaded files (nothing when it carries none)."""
+        with database.connection() as connection:
+            try:
+                detail = service.get_published_event(connection, event_id)
+            except NotFoundError:
+                detail = None
+            if detail is not None:
+                return {"event_id": event_id, "files": detail["files"]}
+            if is_event_editor(
+                connection,
+                event_id,
+                x_event_management_token,
+                x_admin_key,
+                authorization,
+            ) and service.event_exists(connection, event_id):
+                return {
+                    "event_id": event_id,
+                    "files": service.list_event_files(connection, event_id),
+                }
+            raise NotFoundError("event not found")
+
+    @app.get("/api/v1/files/{file_id}", dependencies=[link])
+    def download_event_file(
+        file_id: UUID,
+        x_event_management_token: Annotated[
+            str | None, Header(alias="X-Event-Management-Token")
+        ] = None,
+        x_admin_key: Annotated[str | None, Header()] = None,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> Response:
+        """Serve one uploaded file.
+
+        Published events' files are reachable by anyone holding the
+        calendar link; files of an event still awaiting review need its
+        creator token or admin credentials instead.
+        """
+        with database.connection() as connection:
+            stored = service.get_event_file(connection, file_id)
+            if not stored["is_published"] and not is_event_editor(
+                connection,
+                stored["event_id"],
+                x_event_management_token,
+                x_admin_key,
+                authorization,
+            ):
+                raise NotFoundError("file not found")
+        ascii_name = "".join(
+            character
+            if (character.isascii() and character.isalnum()) or character in "._-"
+            else "_"
+            for character in stored["filename"]
+        ).strip() or "file"
+        image = stored["content_type"].startswith("image/")
+        disposition = (
+            f'inline; filename="{ascii_name}"'
+            if image
+            else f'attachment; filename="{ascii_name}"; '
+            f"filename*=UTF-8''{quote(stored['filename'])}"
+        )
+        return Response(
+            content=stored["data"],
+            media_type=stored["content_type"],
+            headers={
+                "Content-Disposition": disposition,
+                "X-Content-Type-Options": "nosniff",
+                "Cache-Control": "private, max-age=3600",
+            },
+        )
+
+    @app.delete("/api/v1/events/{event_id}/files/{file_id}")
+    def delete_event_file(
+        event_id: UUID,
+        file_id: UUID,
+        x_event_management_token: Annotated[
+            str | None, Header(alias="X-Event-Management-Token")
+        ] = None,
+        x_admin_key: Annotated[str | None, Header()] = None,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> Response:
+        """Remove an uploaded file from an event (creator or admin)."""
+        require_event_editor(
+            event_id, x_event_management_token, x_admin_key, authorization
+        )
+        with database.transaction() as connection:
+            service.delete_event_file(connection, event_id, file_id)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @app.get("/api/v1/events/{event_id}/manage")
     def editable_event(

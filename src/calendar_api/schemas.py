@@ -137,6 +137,70 @@ class RecurrenceDate(StrictModel):
         return value.replace(microsecond=0)
 
 
+# A file attached to an event by link (at most MAX_ATTACHMENTS per event).
+# Creators paste the file's URL plus an optional display name; an image URL
+# renders as an image in the event detail view.
+MAX_ATTACHMENTS = 3
+
+
+class EventAttachment(StrictModel):
+    url: Annotated[NonBlank, StringConstraints(max_length=2000)]
+    name: (
+        Annotated[str, StringConstraints(strip_whitespace=True, max_length=120)]
+    ) = ""
+
+    @field_validator("url")
+    @classmethod
+    def valid_attachment_url(cls, value: str) -> str:
+        parsed = urlparse(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("must be an absolute http(s) URL")
+        return value
+
+
+# Files uploaded from the creator's own machine. They are stored by the
+# server and served back to viewers, so they need no public URL of their
+# own. Uploaded files and link attachments share one cap of MAX_ATTACHMENTS
+# per event; each file is further bounded by MAX_ATTACHMENT_BYTES and an
+# allowlist of image/PDF types.
+MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
+
+ATTACHMENT_MIME_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".svg": "image/svg+xml",
+    ".pdf": "application/pdf",
+}
+
+
+def sanitize_attachment_filename(value: str | None) -> str:
+    """A safe display name for an uploaded file.
+
+    Keeps only the final path segment, collapses whitespace, and caps the
+    length so storage and download headers stay predictable.
+    """
+    name = (value or "").split("/")[-1].split("\\")[-1].strip()
+    name = " ".join(name.split())
+    if not name or name in {".", ".."}:
+        return "file"
+    if len(name) > 120:
+        stem, dot, extension = name.rpartition(".")
+        if dot and len(extension) < 119:
+            name = stem[: 119 - len(extension)] + dot + extension
+        else:
+            name = name[:120]
+    return name
+
+
+def attachment_mime_type(filename: str) -> str | None:
+    """Canonical served type for an upload, from its extension."""
+    extension = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    return ATTACHMENT_MIME_TYPES.get(extension)
+
+
 class EventRevisionInput(StrictModel):
     title: Annotated[NonBlank, StringConstraints(max_length=240)]
     description: Annotated[str, StringConstraints(max_length=20_000)] = ""
@@ -162,6 +226,9 @@ class EventRevisionInput(StrictModel):
         Annotated[str, StringConstraints(strip_whitespace=True, max_length=2000)] | None
     ) = None
     recurrence_dates: list[RecurrenceDate] = Field(default_factory=list, max_length=500)
+    attachments: list[EventAttachment] = Field(
+        default_factory=list, max_length=MAX_ATTACHMENTS
+    )
     group_ids: list[UUID] = Field(default_factory=list, max_length=100)
     submitter: Submitter
     # Scoped edits of a recurring event. These ride alongside the full
@@ -176,6 +243,16 @@ class EventRevisionInput(StrictModel):
     def unique_groups(cls, value: list[UUID]) -> list[UUID]:
         if len(set(value)) != len(value):
             raise ValueError("must not contain duplicates")
+        return value
+
+    @field_validator("attachments")
+    @classmethod
+    def unique_attachments(
+        cls, value: list[EventAttachment]
+    ) -> list[EventAttachment]:
+        urls = [item.url for item in value]
+        if len(set(urls)) != len(urls):
+            raise ValueError("must not contain duplicate urls")
         return value
 
     @field_validator("recurrence_rule")

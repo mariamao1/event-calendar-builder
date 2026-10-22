@@ -89,6 +89,10 @@ class SQLiteDatabase:
                 connection.execute(
                     "ALTER TABLE event_revisions ADD COLUMN virtual_url TEXT"
                 )
+            if "attachments" not in revision_columns:
+                connection.execute(
+                    "ALTER TABLE event_revisions ADD COLUMN attachments TEXT"
+                )
             _migrate_review_actions(connection, schema)
             _migrate_occurrence_overrides(connection)
             _migrate_groups(connection, schema)

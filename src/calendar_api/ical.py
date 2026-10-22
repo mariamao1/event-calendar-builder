@@ -124,6 +124,20 @@ def _event_url(item: Mapping[str, Any]) -> str | None:
     return _http_url(item, "event_url")
 
 
+def _attachment_urls(item: Mapping[str, Any]) -> list[str]:
+    """Linked file attachments (at most three) as ATTACH URIs."""
+    urls = []
+    attachments = item.get("attachments") or []
+    if isinstance(attachments, str):
+        return []
+    for attachment in attachments:
+        url = (attachment.get("url") if isinstance(attachment, Mapping) else "") or ""
+        url = url.strip()
+        if url.startswith(("http://", "https://")) and url not in urls:
+            urls.append(url)
+    return urls
+
+
 def uid(leaf: UUID | str) -> str:
     """Stable UID so re-downloads update the same calendar entry."""
     return f"{leaf}@event-calendar"
@@ -152,6 +166,8 @@ def _content(item: Mapping[str, Any], *, cancelled: bool) -> list[str]:
     url = _event_url(item)
     if url:
         lines.append(f"URL:{url}")
+    for attachment_url in _attachment_urls(item):
+        lines.append(f"ATTACH:{attachment_url}")
     names = [group["name"] for group in item.get("groups") or [] if group.get("name")]
     if names:
         lines.append(f"CATEGORIES:{','.join(escape_text(name) for name in names)}")

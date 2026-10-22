@@ -50,6 +50,9 @@ CREATE TABLE IF NOT EXISTS event_revisions (
   location_address TEXT,
   virtual_url TEXT,
   event_url TEXT,
+  -- Linked file attachments (at most 3): a JSON array of
+  -- {"url", "name"} objects, NULL when the event carries none.
+  attachments TEXT,
   is_all_day INTEGER NOT NULL CHECK (is_all_day IN (0, 1)),
   starts_at TEXT,
   ends_at TEXT,
@@ -145,6 +148,23 @@ CREATE INDEX IF NOT EXISTS local_event_occurrences_timed_calendar_idx
 CREATE INDEX IF NOT EXISTS local_event_occurrences_all_day_calendar_idx
   ON event_occurrences(start_date, end_date, event_id)
   WHERE status = 'scheduled' AND is_all_day = 1;
+
+-- Files uploaded from a creator's own machine. They belong to the event
+-- (not to a revision) and take effect immediately for the creator or an
+-- admin, like scoped single-date edits. Together with the revision's link
+-- attachments they share one cap of 3 per event, enforced by the service.
+CREATE TABLE IF NOT EXISTS event_files (
+  id TEXT PRIMARY KEY,
+  event_id TEXT NOT NULL REFERENCES events(id) ON DELETE RESTRICT,
+  filename TEXT NOT NULL CHECK (trim(filename) <> '' AND length(filename) <= 120),
+  content_type TEXT NOT NULL,
+  size INTEGER NOT NULL CHECK (size > 0),
+  data BLOB NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS local_event_files_event_idx
+  ON event_files(event_id, created_at, id);
 
 -- Accounts for anyone holding the calendar link. Admin is a per-account
 -- capability (is_admin), not a separate kind of account. Usernames are

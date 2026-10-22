@@ -19,8 +19,11 @@ from .occurrence_scopes import (
     EXCEPTION_SKIPPED,
     SKIPPED_REASON,
     apply_content_override,
+    attachments_json,
     build_content_override,
     match_exceptions_by_day,
+    normalize_content_value,
+    parse_attachments,
     parse_content_override,
 )
 from .recurrence import (
@@ -30,11 +33,15 @@ from .recurrence import (
     truncate_rule_before,
 )
 from .schemas import (
+    MAX_ATTACHMENT_BYTES,
+    MAX_ATTACHMENTS,
     EventRevisionInput,
     GroupCreate,
     GroupUpdate,
     ReviewInput,
+    attachment_mime_type,
     next_group_color,
+    sanitize_attachment_filename,
 )
 from .security import new_token, token_digest_bytes, token_matches_digest
 
@@ -222,6 +229,7 @@ def _insert_revision(
         "location_address": payload.location_address or None,
         "virtual_url": payload.virtual_url or None,
         "event_url": payload.event_url or None,
+        "attachments": attachments_json(payload.attachments),
         "is_all_day": payload.is_all_day,
         "starts_at": payload.starts_at,
         "ends_at": payload.ends_at,
@@ -238,13 +246,15 @@ def _insert_revision(
         INSERT INTO event_revisions (
           event_id, revision_number, supersedes_revision_id,
           title, description, location_name, location_address, virtual_url,
-          event_url, is_all_day, starts_at, ends_at, start_date, end_date,
+          event_url, attachments, is_all_day, starts_at, ends_at, start_date,
+          end_date,
           timezone, recurrence_rule, submitted_by_name, submitted_by_channel,
           submitted_by_contact
         ) VALUES (
           %(event_id)s, %(revision_number)s, %(supersedes_revision_id)s,
           %(title)s, %(description)s, %(location_name)s, %(location_address)s,
-          %(virtual_url)s, %(event_url)s, %(is_all_day)s, %(starts_at)s, %(ends_at)s,
+          %(virtual_url)s, %(event_url)s, %(attachments)s, %(is_all_day)s,
+          %(starts_at)s, %(ends_at)s,
           %(start_date)s, %(end_date)s, %(timezone)s, %(recurrence_rule)s,
           %(submitted_by_name)s, %(submitted_by_channel)s,
           %(submitted_by_contact)s
@@ -332,7 +342,8 @@ def get_editable_event(connection: Connection, event_id: UUID) -> dict:
         """
         SELECT r.id AS revision_id, r.event_id, r.revision_number,
                r.approval_status, r.title, r.description, r.location_name,
-               r.location_address, r.virtual_url, r.event_url, r.is_all_day,
+               r.location_address, r.virtual_url, r.event_url, r.attachments,
+               r.is_all_day,
                r.starts_at,
                r.ends_at, r.start_date, r.end_date, r.timezone,
                r.recurrence_rule, r.submitted_by_name, r.submitted_by_channel,
@@ -359,7 +370,10 @@ def get_editable_event(connection: Connection, event_id: UUID) -> dict:
     ).fetchone()
     if row is None:
         raise NotFoundError("event not found")
-    return _as_dict(row)
+    result = _as_dict(row)
+    result["attachments"] = parse_attachments(result.get("attachments"))
+    result["files"] = list_event_files(connection, result["event_id"])
+    return result
 
 
 def create_revision(
@@ -379,6 +393,10 @@ def create_revision(
     ).fetchone()
     if event is None or event["archived_at"] is not None:
         raise NotFoundError("event not found")
+    _, stored_files = _attachment_totals(connection, event_id)
+    _require_attachment_capacity(
+        links=len(payload.attachments), files=stored_files
+    )
     if event["approval_status"] == "pending":
         # A creator may correct a submission that is still waiting in the
         # review queue. Pending content is intentionally mutable; once it is
@@ -393,7 +411,8 @@ def create_revision(
               location_name = %(location_name)s,
               location_address = %(location_address)s,
               virtual_url = %(virtual_url)s,
-              event_url = %(event_url)s, is_all_day = %(is_all_day)s,
+              event_url = %(event_url)s,
+              attachments = %(attachments)s, is_all_day = %(is_all_day)s,
               starts_at = %(starts_at)s, ends_at = %(ends_at)s,
               start_date = %(start_date)s, end_date = %(end_date)s,
               timezone = %(timezone)s, recurrence_rule = %(recurrence_rule)s,
@@ -412,6 +431,7 @@ def create_revision(
                 "location_address": payload.location_address or None,
                 "virtual_url": payload.virtual_url or None,
                 "event_url": payload.event_url or None,
+                "attachments": attachments_json(payload.attachments),
                 "is_all_day": payload.is_all_day,
                 "starts_at": payload.starts_at,
                 "ends_at": payload.ends_at,
@@ -1152,6 +1172,140 @@ def materialize_all(
     return {"events_processed": processed, "occurrences_inserted": inserted}
 
 
+# ---------------------------------------------------------------------------
+# Event file uploads.
+#
+# Files chosen on the creator's own machine are stored by the server and
+# served back to viewers, so they need no public URL of their own. They
+# belong to the event rather than to a revision and take effect immediately
+# for the creator or an admin, like scoped single-date edits. Together with
+# the current revision's link attachments they share one cap of
+# MAX_ATTACHMENTS per event.
+
+
+def _file_public(row: dict) -> dict:
+    return {
+        "file_id": row["id"],
+        "name": row["filename"],
+        "content_type": row["content_type"],
+        "size": row["size"],
+        "is_image": row["content_type"].startswith("image/"),
+    }
+
+
+def list_event_files(connection: Connection, event_id: UUID | str) -> list[dict]:
+    rows = connection.execute(
+        """
+        SELECT id, filename, content_type, size FROM event_files
+         WHERE event_id = %s ORDER BY created_at, id
+        """,
+        (event_id,),
+    ).fetchall()
+    return [_file_public(_as_dict(item)) for item in rows]
+
+
+def _attachment_totals(connection: Connection, event_id: UUID | str) -> tuple[int, int]:
+    """(link attachments on the current revision, uploaded files) of an event."""
+    row = connection.execute(
+        """
+        SELECT r.attachments FROM events e
+          JOIN event_revisions r ON r.id = e.current_revision_id
+         WHERE e.id = %s
+        """,
+        (event_id,),
+    ).fetchone()
+    links = len(parse_attachments(row["attachments"])) if row else 0
+    files = connection.execute(
+        "SELECT count(*) AS count FROM event_files WHERE event_id = %s",
+        (event_id,),
+    ).fetchone()["count"]
+    return links, files
+
+
+def _require_attachment_capacity(*, links: int, files: int) -> None:
+    if links + files > MAX_ATTACHMENTS:
+        raise ValidationError(
+            f"events hold at most {MAX_ATTACHMENTS} attachments "
+            "(uploaded files and linked files combined)"
+        )
+
+
+def upload_event_file(
+    connection: Connection,
+    event_id: UUID,
+    filename: str | None,
+    content_type: str | None,
+    data: bytes,
+) -> dict:
+    """Store one uploaded file on an event, returning its metadata."""
+    event = connection.execute(
+        "SELECT id FROM events WHERE id = %s AND archived_at IS NULL",
+        (event_id,),
+    ).fetchone()
+    if event is None:
+        raise NotFoundError("event not found")
+    name = sanitize_attachment_filename(filename)
+    mime = attachment_mime_type(name)
+    if mime is None:
+        raise ValidationError(
+            "unsupported file type; attach an image (png, jpg, gif, webp, svg)"
+            " or a PDF"
+        )
+    declared = (content_type or "").split(";")[0].strip().lower()
+    if declared and declared != "application/octet-stream" and declared != mime:
+        raise ValidationError("content_type does not match the file extension")
+    if not data:
+        raise ValidationError("cannot attach an empty file")
+    if len(data) > MAX_ATTACHMENT_BYTES:
+        raise ValidationError(
+            f"files cannot exceed {MAX_ATTACHMENT_BYTES // (1024 * 1024)} MB"
+        )
+    links, files = _attachment_totals(connection, event_id)
+    _require_attachment_capacity(links=links, files=files + 1)
+    row = connection.execute(
+        """
+        INSERT INTO event_files
+          (event_id, filename, content_type, size, data)
+        VALUES (%s, %s, %s, %s, %s)
+        RETURNING id, filename, content_type, size
+        """,
+        (event_id, name, mime, len(data), bytes(data)),
+    ).fetchone()
+    return _file_public(_as_dict(row))
+
+
+def delete_event_file(
+    connection: Connection, event_id: UUID, file_id: UUID
+) -> None:
+    row = connection.execute(
+        "DELETE FROM event_files WHERE id = %s AND event_id = %s RETURNING id",
+        (file_id, event_id),
+    ).fetchone()
+    if row is None:
+        raise NotFoundError("file not found")
+
+
+def get_event_file(connection: Connection, file_id: UUID) -> dict:
+    """One stored file with its bytes, plus its event's visibility flags."""
+    row = connection.execute(
+        """
+        SELECT f.id, f.event_id, f.filename, f.content_type, f.size, f.data,
+               e.archived_at IS NOT NULL AS is_archived,
+               e.published_revision_id IS NOT NULL AS is_published
+          FROM event_files f
+          JOIN events e ON e.id = f.event_id
+         WHERE f.id = %s
+        """,
+        (file_id,),
+    ).fetchone()
+    if row is None or row["is_archived"]:
+        raise NotFoundError("file not found")
+    result = _as_dict(row)
+    result["data"] = bytes(result["data"])
+    result.pop("is_archived", None)
+    return result
+
+
 def _search_tokens(search: str | None) -> list[str]:
     """Lowercased whitespace-separated tokens; empty when there is no query."""
     if not search or not search.strip():
@@ -1167,6 +1321,7 @@ _SEARCH_FIELDS = (
     ("location_name", "r.location_name"),
     ("location_address", "r.location_address"),
     ("virtual_url", "r.virtual_url"),
+    ("attachments", "r.attachments"),
 )
 
 
@@ -1234,7 +1389,8 @@ def calendar_occurrences(
           o.timezone, o.content_override, o.instance_cancelled,
           e.cancelled_at IS NOT NULL AS is_cancelled,
           r.id AS revision_id, r.title, r.description, r.location_name,
-          r.location_address, r.virtual_url, r.event_url, r.recurrence_rule,
+          r.location_address, r.virtual_url, r.event_url, r.attachments,
+          r.recurrence_rule,
           grouped.groups
         FROM event_occurrences o
         JOIN events e ON e.id = o.event_id
@@ -1298,6 +1454,8 @@ def calendar_occurrences(
     items = []
     for row in rows[:limit]:
         item = _as_dict(row)
+        item["attachments"] = parse_attachments(item.get("attachments"))
+        item["files"] = list_event_files(connection, item["event_id"])
         # A scoped per-date cancellation flags the date while the series
         # itself stays published; a series-wide cancellation flags every date.
         item["is_cancelled"] = bool(item.get("is_cancelled")) or bool(
@@ -1469,6 +1627,8 @@ def get_published_event(
         raise NotFoundError("published event not found")
     result = _as_dict(row)
     result["is_cancelled"] = result.get("cancelled_at") is not None
+    result["attachments"] = parse_attachments(result.get("attachments"))
+    result["files"] = list_event_files(connection, result["event_id"])
     result["recurrence_dates"] = _load_recurrence_dates(
         connection, result["event_revision_id"]
     )
@@ -1496,6 +1656,7 @@ def get_published_event(
                         "location_address",
                         "virtual_url",
                         "event_url",
+                        "attachments",
                     )
                 }
             )
@@ -1611,7 +1772,12 @@ def get_admin_event(connection: Connection, event_id: UUID) -> dict:
         (event_id,),
     ).fetchall()
     result = _as_dict(event)
-    result["revisions"] = [_as_dict(row) for row in revisions]
+    result["files"] = list_event_files(connection, result["event_id"])
+    result["revisions"] = []
+    for row in revisions:
+        revision = _as_dict(row)
+        revision["attachments"] = parse_attachments(revision.get("attachments"))
+        result["revisions"].append(revision)
     return result
 
 
@@ -1655,6 +1821,7 @@ def _published_for_scope(
             (event["published_revision_id"],),
         ).fetchone()
     )
+    revision["attachments"] = parse_attachments(revision.get("attachments"))
     return revision, _load_recurrence_dates(connection, event["published_revision_id"])
 
 
@@ -1851,6 +2018,7 @@ def _synth_values(
     location_address: str | None,
     virtual_url: str | None,
     event_url: str | None,
+    attachments: list[Any],
     is_all_day: bool,
     starts_at: datetime | None,
     ends_at: datetime | None,
@@ -1871,6 +2039,7 @@ def _synth_values(
         "location_address": location_address,
         "virtual_url": virtual_url,
         "event_url": event_url,
+        "attachments": attachments,
         "is_all_day": is_all_day,
         "starts_at": starts_at.isoformat() if starts_at else None,
         "ends_at": ends_at.isoformat() if ends_at else None,
@@ -1910,7 +2079,8 @@ def _insert_approved_revision(
         INSERT INTO event_revisions (
           event_id, revision_number, supersedes_revision_id,
           approval_status, title, description, location_name, location_address,
-          virtual_url, event_url, is_all_day, starts_at, ends_at, start_date,
+          virtual_url, event_url, attachments, is_all_day, starts_at, ends_at,
+          start_date,
           end_date, timezone, recurrence_rule, submitted_by_name,
           submitted_by_channel, submitted_by_contact, submitted_at, reviewed_at,
           reviewed_by,
@@ -1919,6 +2089,7 @@ def _insert_approved_revision(
           %(event_id)s, %(revision_number)s, %(supersedes_revision_id)s,
           'approved', %(title)s, %(description)s, %(location_name)s,
           %(location_address)s, %(virtual_url)s, %(event_url)s,
+          %(attachments)s,
           %(is_all_day)s, %(starts_at)s,
           %(ends_at)s, %(start_date)s, %(end_date)s, %(timezone)s,
           %(recurrence_rule)s, %(submitted_by_name)s, %(submitted_by_channel)s,
@@ -1936,6 +2107,7 @@ def _insert_approved_revision(
             "location_address": validated.location_address or None,
             "virtual_url": validated.virtual_url or None,
             "event_url": validated.event_url or None,
+            "attachments": attachments_json(validated.attachments),
             "is_all_day": validated.is_all_day,
             "starts_at": validated.starts_at,
             "ends_at": validated.ends_at,
@@ -2150,8 +2322,8 @@ def _pin_past_content(
     """
     frozen = {}
     for field in CONTENT_OVERRIDE_FIELDS:
-        old_value = old_revision.get(field) or None
-        new_value = getattr(new_revision, field, None) or None
+        old_value = normalize_content_value(old_revision.get(field)) or None
+        new_value = normalize_content_value(getattr(new_revision, field, None)) or None
         if old_value != new_value:
             frozen[field] = old_value
     if not frozen:
@@ -2217,6 +2389,10 @@ def edit_future_occurrences(
         )
     target = _scope_target(connection, event["id"], occurrence_id)
     _require_active_groups(connection, payload.group_ids)
+    _, stored_files = _attachment_totals(connection, event["id"])
+    _require_attachment_capacity(
+        links=len(payload.attachments), files=stored_files
+    )
     _check_scoped_recurrence(
         connection,
         payload,
@@ -2263,6 +2439,7 @@ def edit_future_occurrences(
             location_address=payload.location_address,
             virtual_url=payload.virtual_url,
             event_url=payload.event_url,
+            attachments=payload.attachments,
             is_all_day=payload.is_all_day,
             starts_at=new_starts_at,
             ends_at=new_ends_at,
@@ -2378,6 +2555,7 @@ def _commit_truncation(
             location_address=revision["location_address"],
             virtual_url=revision["virtual_url"],
             event_url=revision["event_url"],
+            attachments=revision["attachments"],
             is_all_day=bool(revision["is_all_day"]),
             starts_at=revision["starts_at"],
             ends_at=revision["ends_at"],
