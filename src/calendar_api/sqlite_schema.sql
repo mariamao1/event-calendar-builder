@@ -32,6 +32,10 @@ CREATE TABLE IF NOT EXISTS events (
   cancelled_at TEXT,
   cancelled_by TEXT,
   cancel_reason TEXT,
+  -- Set when the calendar owner pins the event to the featured strip (at
+  -- most 3 at once). Owner curation, not event content, so not revisioned.
+  -- A pin whose event has no date left to end counts as gone.
+  featured_at TEXT,
   updated_at TEXT NOT NULL,
   FOREIGN KEY (current_revision_id) REFERENCES event_revisions(id),
   FOREIGN KEY (published_revision_id) REFERENCES event_revisions(id)

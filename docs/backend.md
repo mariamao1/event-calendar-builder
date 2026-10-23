@@ -118,6 +118,7 @@ Public routes:
 | `GET` | `/health` | Database readiness |
 | `GET` | `/api/v1/groups` | Active filter groups |
 | `GET` | `/api/v1/calendar` | Published occurrences in a range |
+| `GET` | `/api/v1/featured` | Featured events, newest pin first, each at its next date |
 | `GET` | `/api/v1/events/{event_id}` | One published event; `?occurrence=` adds that date and series context |
 | `GET` | `/api/v1/events/{event_id}/ics` | One published event as an iCalendar (`.ics`) download; `?occurrence=` exports only that date |
 | `GET` | `/api/v1/events/{event_id}/google` | `303` redirect to Google Calendar's add-event page; `?occurrence=` adds only that date |
@@ -180,6 +181,8 @@ Admin routes (require admin authentication, see below):
 | `POST` | `/api/v1/admin/events/{event_id}/revoke` | Unpublish and cancel future occurrences |
 | `POST` | `/api/v1/admin/events/{event_id}/cancel` | Admin-only alias of event cancellation |
 | `DELETE` | `/api/v1/admin/events/{event_id}` | Admin-only alias of event deletion |
+| `PUT` | `/api/v1/admin/events/{event_id}/featured` | Feature an event (at most 3 at once) |
+| `DELETE` | `/api/v1/admin/events/{event_id}/featured` | Stop featuring an event |
 
 The single-event read powers the event detail view. Besides the published
 revision (including up to three linked file `attachments`, each a
@@ -195,6 +198,38 @@ around the requested one, up to six `upcoming` dates with `upcoming_count`, and
 `skipped` dates (deleted on their own, restorable). Occurrence objects carry
 `instance_exception` (`"cancelled"`, `"skipped"`, or `null`). Submitter
 details are never included.
+
+## Featured events
+
+The calendar owner (any admin) pins up to three events to the featured strip
+above the calendar. A pin is the owner's curation, not event content, so it
+is stored on the event (`events.featured_at`) rather than a revision and never
+goes through review.
+
+- `PUT /api/v1/admin/events/{event_id}/featured` features an event and returns
+  `{event_id, is_featured, featured_at}`. Only published, visible events that
+  still have an upcoming date can be featured: unpublished, deleted, and
+  missing events report `404`; cancelled events and events whose dates are
+  all past report `409`. A fourth pin reports `409` until one is unfeatured.
+  Featuring a featured event again keeps its original pin time.
+- `DELETE` on the same path unfeatures it (`{event_id, is_featured: false}`;
+  a no-op when it was not featured, `404` for missing or deleted events).
+- `GET /api/v1/featured` (link token, like other public reads) lists the
+  featured events, newest pin first, as `{items, meta: {limit}}`. Each item is
+  the event at its next date: `event_id`, `occurrence_id`, the date's timing,
+  its content (with any single-date edit merged in), `recurrence_rule`,
+  active `groups`, and `featured_at`.
+- Calendar items and the single-event read carry `is_featured`.
+
+A pin only counts while its event is published, visible, not cancelled, and
+has a scheduled date (not cancelled on its own) that has not ended. That
+check runs on every read, so an event leaves the feature as soon as its last
+date ends (for a repeating series, the whole series; a never-ending series
+stays until unfeatured) and its slot is free at once. Cancelled, unpublished,
+and group-hidden events likewise drop off and take no slot. Past pins are
+cleared from the table the next time an event is featured. PostgreSQL
+serializes pins with a transaction-scoped advisory lock, and SQLite with its
+write lock, so concurrent pins cannot exceed the limit.
 
 ## RSVP
 

@@ -33,6 +33,7 @@ from .recurrence import (
 from .schemas import (
     MAX_ATTACHMENT_BYTES,
     MAX_ATTACHMENTS,
+    MAX_FEATURED_EVENTS,
     EventRevisionInput,
     GroupCreate,
     GroupUpdate,
@@ -1563,11 +1564,13 @@ def calendar_occurrences(
         tuple(params),
     ).fetchall()
     has_more = len(rows) > limit
+    featured = _featured_event_ids(connection, _now())
     items: list[dict] = []
     for source in rows[:limit]:
         item = dict(source)
         item["is_exception"] = bool(item["is_exception"])
         item["is_all_day"] = bool(item["is_all_day"])
+        item["is_featured"] = str(item["event_id"]) in featured
         item["attachments"] = parse_attachments(item.get("attachments"))
         item["files"] = list_event_files(connection, item["event_id"])
         # A scoped per-date cancellation flags the date while the series
@@ -1748,6 +1751,9 @@ def get_published_event(
     result["rsvp_enabled"] = bool(result.get("rsvp_enabled", False))
     result["rsvp_counts"] = _rsvp_counts(connection, result["event_id"])
     result["is_cancelled"] = result.get("cancelled_at") is not None
+    result["is_featured"] = str(result["event_id"]) in _featured_event_ids(
+        connection, now
+    )
     result["attachments"] = parse_attachments(result.get("attachments"))
     result["files"] = list_event_files(connection, result["event_id"])
     result["groups"] = _groups_for_revision(
@@ -2019,6 +2025,145 @@ def delete_rsvp(
         "user_id": str(user_id),
         "withdrawn": True,
     }
+
+
+# ---------------------------------------------------------------------------
+# Featured events.
+#
+# The calendar owner pins up to MAX_FEATURED_EVENTS events to a strip above
+# the calendar. A pin is active while its event is published, visible, not
+# cancelled, and still has a scheduled date that has not ended. Anything else
+# stays off the strip and takes no slot, so a past event leaves the feature
+# on its own; past pins are cleared for good the next time an event is pinned.
+
+# A scheduled date, not cancelled on its own, that has not ended yet.
+_UPCOMING_DATE = """
+    status = 'scheduled' AND instance_cancelled = 0
+    AND ((is_all_day = 0 AND ends_at > ?) OR (is_all_day = 1 AND end_date > ?))
+"""
+
+
+def _upcoming_params(now: datetime) -> tuple[str, str]:
+    return (_timestamp(now), now.date().isoformat())
+
+
+def featured_events(
+    connection: sqlite3.Connection,
+    *,
+    limit: int | None = MAX_FEATURED_EVENTS,
+    now: datetime | None = None,
+) -> list[dict]:
+    """Active featured events, newest pin first, each at its next date."""
+    now = now or _now()
+    rows = connection.execute(
+        f"""
+        SELECT e.id AS event_id, e.featured_at,
+               r.id AS revision_id, r.title, r.description, r.location_name,
+               r.location_address, r.virtual_url, r.event_url,
+               r.recurrence_rule,
+               o.id AS occurrence_id, o.is_all_day, o.starts_at, o.ends_at,
+               o.start_date, o.end_date, o.timezone, o.content_override
+          FROM events e
+          JOIN event_revisions r ON r.id = e.published_revision_id
+          JOIN event_occurrences o ON o.id = (
+            SELECT id FROM event_occurrences
+             WHERE event_id = e.id AND {_UPCOMING_DATE}
+             ORDER BY {_OCCURRENCE_KEY}, id LIMIT 1
+          )
+         WHERE e.featured_at IS NOT NULL AND e.archived_at IS NULL
+           AND e.cancelled_at IS NULL AND r.approval_status = 'approved'
+           AND (
+             NOT EXISTS (
+               SELECT 1 FROM event_revision_groups assigned_rg
+               JOIN groups assigned_g ON assigned_g.id = assigned_rg.group_id
+                WHERE assigned_rg.event_revision_id = r.id
+                  AND assigned_g.deleted_at IS NULL
+             )
+             OR EXISTS (
+               SELECT 1 FROM event_revision_groups visible_rg
+               JOIN groups visible_g ON visible_g.id = visible_rg.group_id
+               WHERE visible_rg.event_revision_id = r.id AND visible_g.is_active = 1
+             )
+           )
+         ORDER BY e.featured_at DESC, e.id
+         LIMIT ?
+        """,
+        (*_upcoming_params(now), -1 if limit is None else limit),
+    ).fetchall()
+    items: list[dict] = []
+    for source in rows:
+        item = dict(source)
+        item["is_all_day"] = bool(item["is_all_day"])
+        item["is_featured"] = True
+        # A diverged next date carries its own content merged over the series.
+        apply_content_override(item, item.pop("content_override", None))
+        item["groups"] = _groups_for_revision(
+            connection, item["revision_id"], active_only=True
+        )
+        items.append(item)
+    return items
+
+
+def _featured_event_ids(connection: sqlite3.Connection, now: datetime) -> set[str]:
+    """Ids of the events on the featured strip."""
+    return {str(item["event_id"]) for item in featured_events(connection, now=now)}
+
+
+def feature_event(
+    connection: sqlite3.Connection, event_id: UUID, *, now: datetime | None = None
+) -> dict:
+    """Pin a published, upcoming event to the featured strip.
+
+    Pinning an already featured event keeps its original pin time.
+    """
+    now = now or _now()
+    try:
+        detail = get_published_event(connection, event_id, now=now)
+    except NotFoundError:
+        raise NotFoundError("event not found") from None
+    if detail["is_cancelled"]:
+        raise ConflictError("cancelled events cannot be featured")
+    upcoming = connection.execute(
+        f"SELECT 1 FROM event_occurrences WHERE event_id = ? AND {_UPCOMING_DATE} LIMIT 1",
+        (str(event_id), *_upcoming_params(now)),
+    ).fetchone()
+    if upcoming is None:
+        raise ConflictError("only events with an upcoming date can be featured")
+    current = connection.execute(
+        "SELECT featured_at FROM events WHERE id = ?", (str(event_id),)
+    ).fetchone()["featured_at"]
+    if current is not None:
+        return {"event_id": str(event_id), "is_featured": True, "featured_at": current}
+    connection.execute(
+        f"""
+        UPDATE events SET featured_at = NULL
+         WHERE featured_at IS NOT NULL AND NOT EXISTS (
+           SELECT 1 FROM event_occurrences
+            WHERE event_id = events.id AND {_UPCOMING_DATE}
+         )
+        """,
+        _upcoming_params(now),
+    )
+    if len(featured_events(connection, limit=None, now=now)) >= MAX_FEATURED_EVENTS:
+        raise ConflictError(
+            f"at most {MAX_FEATURED_EVENTS} events can be featured at once; "
+            "unfeature one first"
+        )
+    featured_at = _timestamp(now)
+    connection.execute(
+        "UPDATE events SET featured_at = ? WHERE id = ?", (featured_at, str(event_id))
+    )
+    return {"event_id": str(event_id), "is_featured": True, "featured_at": featured_at}
+
+
+def unfeature_event(connection: sqlite3.Connection, event_id: UUID) -> dict:
+    """Take an event off the featured strip (a no-op when it is not on it)."""
+    if not event_exists(connection, event_id):
+        raise NotFoundError("event not found")
+    connection.execute(
+        "UPDATE events SET featured_at = NULL WHERE id = ?", (str(event_id),)
+    )
+    return {"event_id": str(event_id), "is_featured": False}
 
 
 # ---------------------------------------------------------------------------

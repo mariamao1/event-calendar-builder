@@ -33,6 +33,7 @@ from .occurrence_scopes import CONTENT_OVERRIDE_FIELDS, apply_content_override
 from .rate_limit import RateLimiter
 from .schemas import (
     MAX_ATTACHMENT_BYTES,
+    MAX_FEATURED_EVENTS,
     EventRevisionInput,
     GroupCreate,
     GroupUpdate,
@@ -1151,6 +1152,18 @@ def create_app(
             },
         }
 
+    @app.get("/api/v1/featured", dependencies=[link])
+    def featured() -> dict:
+        """Events the calendar owner pinned, newest pin first.
+
+        Each item is the event at its next date that has not ended. Events
+        whose dates are all past (or that were cancelled or unpublished)
+        leave the list on their own and free their slot.
+        """
+        with database.connection() as connection:
+            items = service.featured_events(connection)
+        return {"items": items, "meta": {"limit": MAX_FEATURED_EVENTS}}
+
     def export_row(detail: dict, row: dict) -> dict:
         """One materialized date of a series with its own content merged in."""
         item = {field: detail.get(field) for field in CONTENT_OVERRIDE_FIELDS}
@@ -1362,6 +1375,22 @@ def create_app(
     def revoke(event_id: UUID, payload: ReviewInput) -> dict:
         with database.transaction() as connection:
             return service.revoke_event(connection, event_id, payload)
+
+    @app.put("/api/v1/admin/events/{event_id}/featured", dependencies=[admin])
+    def feature_event(event_id: UUID) -> dict:
+        """Pin a published event with an upcoming date to the featured strip.
+
+        At most `MAX_FEATURED_EVENTS` events are featured at once (`409`
+        beyond that); pinning a featured event again keeps its pin.
+        """
+        with database.transaction() as connection:
+            return service.feature_event(connection, event_id)
+
+    @app.delete("/api/v1/admin/events/{event_id}/featured", dependencies=[admin])
+    def unfeature_event(event_id: UUID) -> dict:
+        """Take an event off the featured strip."""
+        with database.transaction() as connection:
+            return service.unfeature_event(connection, event_id)
 
     def removal_actor(
         payload: RemovalInput | None, identity: str | None

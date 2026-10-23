@@ -81,6 +81,8 @@ class SQLiteDatabase:
                 connection.execute("ALTER TABLE events ADD COLUMN cancelled_by TEXT")
             if "cancel_reason" not in event_columns:
                 connection.execute("ALTER TABLE events ADD COLUMN cancel_reason TEXT")
+            if "featured_at" not in event_columns:
+                connection.execute("ALTER TABLE events ADD COLUMN featured_at TEXT")
             revision_columns = {
                 row[1]
                 for row in connection.execute("PRAGMA table_info(event_revisions)")
@@ -125,6 +127,12 @@ class SQLiteDatabase:
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS groups_live_slug_unique
                   ON groups(slug) WHERE deleted_at IS NULL
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS local_events_featured_idx
+                  ON events(featured_at) WHERE featured_at IS NOT NULL
                 """
             )
             connection.execute(

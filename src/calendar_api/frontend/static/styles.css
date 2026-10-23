@@ -2680,6 +2680,86 @@ dialog::backdrop {
 }
 
 /* Event search: free-text narrowing that combines with the group filter. */
+/* Featured events: up to three cards above the calendar, each opening its
+   event at the next date. Hidden when nothing is featured. Each card fills one
+   of three fixed slots and every line is one row tall, so cards keep the
+   same size however many events are featured. */
+.featured-strip {
+  padding: 0 34px 14px;
+}
+
+.featured-strip[hidden] {
+  display: none;
+}
+
+.featured-strip-heading {
+  margin: 0 0 8px;
+  color: var(--coral-ink);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.featured-strip-heading::before {
+  content: "★ ";
+}
+
+.featured-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.featured-card {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  height: 100%;
+  padding: 11px 14px 12px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--event-color, var(--forest));
+  border-radius: 12px;
+  color: var(--ink);
+  background: var(--paper);
+  cursor: pointer;
+  text-align: left;
+  font: 400 0.82rem/1.35 Inter, ui-sans-serif, system-ui, sans-serif;
+}
+
+.featured-card:hover {
+  background: #f6f2e7;
+}
+
+.featured-card-title,
+.featured-card-when,
+.featured-card-where {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.featured-card-title {
+  font-size: 0.92rem;
+  font-weight: 750;
+}
+
+.featured-card-when,
+.featured-card-where {
+  color: var(--muted);
+}
+
+.featured-marker {
+  flex: none;
+  margin-left: 3px;
+  color: var(--coral-ink);
+  font-size: 0.85em;
+}
+
 .calendar-search {
   display: flex;
   gap: 8px;
@@ -2971,6 +3051,10 @@ dialog::backdrop {
 }
 
 @media (max-width: 820px) {
+  .featured-strip {
+    padding: 0 19px 12px;
+  }
+
   .calendar-search {
     padding: 0 19px 10px;
   }
@@ -3002,6 +3086,15 @@ dialog::backdrop {
 }
 
 @media (max-width: 520px) {
+  .featured-strip {
+    padding: 0 14px 10px;
+  }
+
+  /* Too narrow for three slots: cards stack, still all one size. */
+  .featured-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .calendar-search {
     padding: 0 14px 10px;
   }
@@ -3166,7 +3259,8 @@ dialog::backdrop {
   }
 
   .month-grid .event-tags,
-  .month-grid .repeat-icon {
+  .month-grid .repeat-icon,
+  .month-grid .featured-marker {
     display: none;
   }
 

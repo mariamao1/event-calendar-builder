@@ -71,6 +71,11 @@
             </div>
           </div>
 
+          <section id="featured-events" class="featured-strip" aria-labelledby="featured-events-heading" hidden>
+            <h2 id="featured-events-heading" class="featured-strip-heading">Featured</h2>
+            <ul id="featured-events-list" class="featured-list"></ul>
+          </section>
+
           <div class="calendar-search" role="search">
             <label class="search-field">
               <span class="sr-only">Search events</span>
@@ -221,6 +226,7 @@
         <div class="event-detail-actions">
           <button class="quiet-button" id="copy-event-link-button" type="button">Copy link</button>
           <span class="event-actions-spacer" aria-hidden="true"></span>
+          <button class="quiet-button" id="feature-event-button" type="button" aria-pressed="false" hidden>Feature</button>
           <button class="quiet-button danger-button" id="unpublish-event-button" type="button" hidden>Unpublish</button>
           <button class="quiet-button" id="cancel-event-button" type="button" hidden>Cancel event</button>
           <button class="quiet-button" id="restore-date-button" type="button" hidden>Restore date</button>

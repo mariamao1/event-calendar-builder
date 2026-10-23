@@ -123,6 +123,9 @@ class Submitter(StrictModel):
     ] = ""
 
 
+# The calendar owner pins at most this many events to the featured strip.
+MAX_FEATURED_EVENTS = 3
+
 # RSVP answers. An event opts in with `rsvp_enabled`; signed-in users then
 # answer whether they are attending. Canonical answers are "attending" and
 # "declined"; common spellings ("yes"/"no", "going", "accepted"/"decline",

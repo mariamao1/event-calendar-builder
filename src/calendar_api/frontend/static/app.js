@@ -136,6 +136,8 @@ const state = {
   // Free-text query matched against event title, description, and location;
   // empty shows every event. Combines with the group filter (both apply).
   search: urlState.search,
+  // Events the calendar owner pinned (newest first), each at its next date.
+  featured: [],
   // Set when keyboard navigation pages the month grid, so focus follows
   // onto the newly rendered month.
   focusMonthAfterRender: false,
@@ -521,6 +523,7 @@ function renderBand(segment) {
   title.textContent = event.title;
   button.append(title);
   appendRepeatIcon(button, event);
+  appendFeaturedIcon(button, event);
   appendGroupTags(button, event);
   button.addEventListener("click", () => openEventDialog(event));
   return button;
@@ -544,6 +547,7 @@ function renderTimedEvent(event) {
   title.textContent = event.title;
   button.append(time, title);
   appendRepeatIcon(button, event);
+  appendFeaturedIcon(button, event);
   appendGroupTags(button, event);
   button.addEventListener("click", () => openEventDialog(event));
   return button;
@@ -788,6 +792,7 @@ function renderSearchResults() {
     title.className = "search-result-title";
     title.textContent = event.title;
     appendRepeatIcon(title, event);
+    appendFeaturedIcon(title, event);
     const when = document.createElement("span");
     when.className = "search-result-when";
     when.textContent = formatOccurrenceLabel(event);
@@ -804,6 +809,58 @@ function renderSearchResults() {
     more.textContent = `Showing the first ${SEARCH_RESULTS_LIMIT}. Refine your search to narrow it down.`;
     container.append(more);
   }
+}
+
+// The strip of featured events above the calendar. Featuring is global, so
+// it ignores the view, group filter, and search. The server leaves out events
+// whose dates are all past, so every card is still to come.
+async function loadFeatured() {
+  try {
+    const body = await jsonRequest(urlWithAccessToken("/api/v1/featured"), {
+      headers: { Accept: "application/json" },
+    });
+    state.featured = body.items || [];
+  } catch (_) {
+    state.featured = [];
+  }
+  renderFeatured();
+}
+
+function renderFeatured() {
+  const container = document.querySelector("#featured-events");
+  const list = document.querySelector("#featured-events-list");
+  container.hidden = state.featured.length === 0;
+  list.replaceChildren(...state.featured.map((event) => {
+    const item = document.createElement("li");
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "featured-card";
+    card.style.setProperty("--event-color", groupColor(event).solid);
+    const label = eventAriaLabel(event, formatDate(dateFromKey(occurrenceDayKey(event)), {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+    }));
+    card.setAttribute("aria-label", label);
+    card.title = label;
+    const title = document.createElement("span");
+    title.className = "featured-card-title";
+    title.textContent = event.title;
+    appendRepeatIcon(title, event);
+    const when = document.createElement("span");
+    when.className = "featured-card-when";
+    when.textContent = formatOccurrenceLabel(event);
+    card.append(title, when);
+    const where = event.location_name || event.location_address || (event.virtual_url ? "Online" : "");
+    // Kept even when empty so every card is the same height.
+    const place = document.createElement("span");
+    place.className = "featured-card-where";
+    place.textContent = where || "\u00a0";
+    card.append(place);
+    card.addEventListener("click", () => openEventDialog(event));
+    item.append(card);
+    return item;
+  }));
 }
 
 function updateHeading() {
@@ -865,6 +922,7 @@ function renderTimeBlock(segment, rangeStartMin, rangeMinutes) {
     (segment.continuesBefore ? "↩ " : "") + event.title + (segment.continuesAfter ? " ↪" : "");
   button.append(head, title);
   appendRepeatIcon(title, event);
+  appendFeaturedIcon(title, event);
   button.addEventListener("click", () => openEventDialog(event));
   return button;
 }
@@ -901,6 +959,7 @@ function renderTimeView(days, allDayContainer, gridContainer) {
       title.textContent = event.title;
       button.append(title);
       appendRepeatIcon(button, event);
+      appendFeaturedIcon(button, event);
       appendGroupTags(button, event);
       button.title = eventAriaLabel(event);
       button.setAttribute("aria-label", eventAriaLabel(event, formatDate(day, { month: "long", day: "numeric" })));
@@ -1103,6 +1162,9 @@ async function loadMonth({ quiet = false } = {}) {
   // The view and cursor date are reflected in the URL on every navigation,
   // so a refresh or a shared link restores exactly what was visible.
   writeUrlState();
+  // Kept fresh with the calendar, since edits and removals that reload it
+  // can also change what is featured.
+  loadFeatured();
   if (state.request) state.request.abort();
   const controller = new AbortController();
   state.request = controller;
@@ -1306,9 +1368,10 @@ function eventAriaLabel(event, dayText = null) {
   const timing = event.is_all_day ? "All day" : formatTime(event.starts_at);
   const day = dayText ? ` on ${dayText}` : "";
   const repeats = event.recurrence_rule ? " (repeats)" : "";
+  const featured = event.is_featured ? " (featured)" : "";
   const groups = eventTagGroups(event).map((group) => group.name);
   const tags = groups.length ? ` · ${groups.length === 1 ? "Group" : "Groups"}: ${groups.join(", ")}` : "";
-  return `${timing}${day}: ${event.title}${repeats}${event.is_cancelled ? " (cancelled)" : ""}${tags}`;
+  return `${timing}${day}: ${event.title}${featured}${repeats}${event.is_cancelled ? " (cancelled)" : ""}${tags}`;
 }
 
 // Small cue on calendar items that belong to a repeating series. Items with
@@ -1321,6 +1384,18 @@ function appendRepeatIcon(element, event) {
   icon.setAttribute("aria-label", "repeats");
   icon.title = "Repeating event";
   icon.textContent = "↻";
+  element.append(icon);
+}
+
+// Star on calendar items the calendar owner featured, named like the repeat cue.
+function appendFeaturedIcon(element, event) {
+  if (!event.is_featured) return;
+  const icon = document.createElement("span");
+  icon.className = "featured-marker";
+  icon.setAttribute("role", "img");
+  icon.setAttribute("aria-label", "featured");
+  icon.title = "Featured event";
+  icon.textContent = "★";
   element.append(icon);
 }
 
@@ -1359,6 +1434,7 @@ function openDayDialog(key) {
     title.className = "day-card-title";
     title.textContent = event.title;
     appendRepeatIcon(title, event);
+    appendFeaturedIcon(title, event);
     const meta = document.createElement("span");
     meta.className = "day-card-meta";
     const place = event.location_name || (event.virtual_url ? "Online" : "");
@@ -2440,6 +2516,7 @@ function renderEventActions(view) {
   const edit = document.querySelector("#edit-event-button");
   const review = document.querySelector("#review-event-edit-button");
   const unpublish = document.querySelector("#unpublish-event-button");
+  const feature = document.querySelector("#feature-event-button");
   const cancel = document.querySelector("#cancel-event-button");
   const restore = document.querySelector("#restore-date-button");
   const remove = document.querySelector("#delete-event-button");
@@ -2450,13 +2527,17 @@ function renderEventActions(view) {
   document.querySelector("#event-share-fallback").hidden = true;
   edit.hidden = !available || !canRemove;
   unpublish.hidden = !available || !admin;
+  // Cancelled events cannot be featured, but a lingering pin can be removed.
+  feature.hidden = !view.event || !admin || (view.event.is_cancelled && !view.event.is_featured);
+  feature.textContent = view.event?.is_featured ? "Unfeature" : "Feature";
+  feature.setAttribute("aria-pressed", String(Boolean(view.event?.is_featured)));
   cancel.hidden = !available || !canRemove || Boolean(view.event?.is_cancelled || selected?.is_cancelled);
   // Only a date cancelled on its own can be restored; dates cancelled with
   // "this and future" ended the series, so bringing them back is a series edit.
   restore.hidden = !available || !canRemove || selected?.instance_exception !== "cancelled";
   remove.hidden = !available || !canRemove;
   review.hidden = !admin || document.querySelector("#event-admin-pending").hidden;
-  copy.parentElement.hidden = [copy, edit, review, unpublish, cancel, restore, remove].every((button) => button.hidden);
+  copy.parentElement.hidden = [copy, edit, review, unpublish, feature, cancel, restore, remove].every((button) => button.hidden);
 }
 
 function currentEventShareUrl() {
@@ -2587,6 +2668,31 @@ async function unpublishEventFromDetail() {
   } catch (error) {
     const message = handleReviewAuthError(error) || error.message;
     // An expired session falls back to the viewer's version of the page.
+    if (!isAdminSignedIn() && eventDetail.view) renderEventDetail(eventDetail.view);
+    setEventDetailError(message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function toggleFeaturedFromDetail() {
+  const { eventId, view } = eventDetail;
+  if (!isAdminSignedIn() || !view?.event) return;
+  const title = view.event.title;
+  const featuring = !view.event.is_featured;
+  const button = document.querySelector("#feature-event-button");
+  button.disabled = true;
+  setEventDetailError("");
+  try {
+    await jsonRequest(`/api/v1/admin/events/${eventId}/featured`, {
+      method: featuring ? "PUT" : "DELETE",
+      headers: reviewQueueHeaders(),
+    });
+    await loadEventDetail();
+    loadMonth({ quiet: true });
+    statusRegion.textContent = featuring ? `“${title}” is featured.` : `“${title}” is no longer featured.`;
+  } catch (error) {
+    const message = handleReviewAuthError(error) || error.message;
     if (!isAdminSignedIn() && eventDetail.view) renderEventDetail(eventDetail.view);
     setEventDetailError(message);
   } finally {
@@ -4771,6 +4877,7 @@ function bindControls() {
   document.querySelector("#edit-event-button").addEventListener("click", editEventFromDetail);
   document.querySelector("#review-event-edit-button").addEventListener("click", reviewEventFromDetail);
   document.querySelector("#unpublish-event-button").addEventListener("click", unpublishEventFromDetail);
+  document.querySelector("#feature-event-button").addEventListener("click", toggleFeaturedFromDetail);
   document.querySelector("#cancel-event-button").addEventListener("click", cancelEventFromDetail);
   document.querySelector("#restore-date-button").addEventListener("click", (event) => {
     const { view } = eventDetail;

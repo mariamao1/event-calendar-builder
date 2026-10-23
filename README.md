@@ -23,6 +23,7 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/009_event_attachments.s
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/010_event_files.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/011_user_accounts.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/012_event_rsvps.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/013_event_featured.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/tests/001_initial_schema_smoke.sql
 ```
 
@@ -82,6 +83,13 @@ has it, and it can be granted to registered accounts with
 `PATCH /api/v1/admin/users/{id}`). Only admin accounts see the review queue
 and **Groups**. When an event enables RSVP, signed-in users can say whether
 they're attending, change their answer later, and see each other's RSVPs.
+
+Admins can feature up to three events with **Feature** in the event detail
+view (**Unfeature** takes it back). Featured events appear as cards in a
+**Featured** strip above the calendar, each showing its next date, and carry
+a ★ on every calendar view. Once all of an event's dates are past (for a
+repeating event, the whole series), it leaves the strip on its own and frees
+its slot; cancelled or unpublished events leave it too.
 
 Use the **Month / Week / Day** switcher to change views. Week and day are
 time grids: timed events are positioned by their start/end times, overlapping

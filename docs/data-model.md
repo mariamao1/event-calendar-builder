@@ -201,6 +201,20 @@ Accounts are deliberately not referenced by events or revisions yet:
 submissions stay accountless (name, contact, management token), so linking
 or deleting an account never changes an event's audit trail.
 
+## Featured events
+
+`events.featured_at` (migration `013_event_featured.sql`) is set when an admin
+features the event and `NULL` otherwise; a partial index covers the few
+featured rows. It lives on `events`, not `event_revisions`, because featuring
+is the owner's curation rather than submitted content: it is not revisioned,
+reviewed, or carried by scoped edits, and editing an event keeps its pin.
+
+At most three pins are active at once, enforced in the service. A pin is
+active only while its event is published, not archived or cancelled, visible
+through its groups, and has a scheduled occurrence (not cancelled on its own)
+that has not ended. Pins that are past are therefore inert without a
+background job, and the next feature action clears them to `NULL`.
+
 ## RSVPs
 
 `event_revisions.rsvp_enabled` (migration `012_event_rsvps.sql`) is the
