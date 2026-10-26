@@ -98,7 +98,7 @@ CREATE TABLE IF NOT EXISTS event_review_actions (
   id TEXT PRIMARY KEY,
   event_id TEXT NOT NULL REFERENCES events(id),
   event_revision_id TEXT NOT NULL REFERENCES event_revisions(id),
-  action TEXT NOT NULL CHECK (action IN ('approve', 'reject', 'revoke', 'cancel', 'delete', 'restore')),
+  action TEXT NOT NULL CHECK (action IN ('approve', 'reject', 'revoke', 'cancel', 'delete', 'restore', 'tag')),
   actor TEXT NOT NULL,
   note TEXT,
   occurred_at TEXT NOT NULL

@@ -2121,6 +2121,88 @@ dialog::backdrop {
   background: #fdfbf5;
 }
 
+.review-card-heading {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.review-card-select,
+.search-result-select {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin: 1px 0 0;
+  accent-color: var(--forest);
+}
+
+/* Multi-select: "Select all", the action bar, and the batch summary. */
+.bulk-select-row {
+  margin-top: 14px;
+}
+
+.bulk-select-all {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  color: #39443f;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.bulk-select-all input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--forest);
+}
+
+.bulk-bar {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--forest-soft);
+  border-radius: 13px;
+  background: #f4f9f6;
+}
+
+.bulk-bar[hidden] {
+  display: none;
+}
+
+.bulk-count {
+  margin: 0;
+  color: var(--forest);
+  font-size: 0.8rem;
+  font-weight: 850;
+}
+
+.bulk-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.bulk-note {
+  margin: 0;
+  color: var(--coral-ink);
+  font-size: 0.74rem;
+}
+
+.bulk-summary {
+  margin: 10px 0 0;
+  color: var(--forest);
+  font-size: 0.8rem;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.bulk-summary:empty {
+  display: none;
+}
+
 .review-card-title {
   margin: 0;
   font-size: 0.95rem;
@@ -2859,6 +2941,36 @@ dialog::backdrop {
 
 .search-result.is-cancelled .search-result-title {
   text-decoration: line-through;
+}
+
+.search-results-top {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.search-results-top .search-results-heading {
+  flex: 1 1 auto;
+}
+
+.search-select-toggle {
+  flex: none;
+  margin: 4px 6px 0 0;
+}
+
+.search-results .bulk-select-row,
+.search-results .bulk-bar,
+.search-results .bulk-summary {
+  margin: 6px 10px 8px;
+}
+
+label.search-result {
+  align-items: center;
+}
+
+.bulk-tags-surface {
+  width: min(94vw, 520px);
 }
 
 .search-results-more {

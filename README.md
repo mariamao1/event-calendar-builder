@@ -24,6 +24,7 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/010_event_files.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/011_user_accounts.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/012_event_rsvps.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/013_event_featured.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/014_event_tag_action.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/tests/001_initial_schema_smoke.sql
 ```
 
@@ -83,6 +84,13 @@ has it, and it can be granted to registered accounts with
 `PATCH /api/v1/admin/users/{id}`). Only admin accounts see the review queue
 and **Groups**. When an event enables RSVP, signed-in users can say whether
 they're attending, change their answer later, and see each other's RSVPs.
+
+In the **Review queue**, admins can check several submissions (or
+**Select all**) and use **Approve selected** or **Reject selected**, with one
+optional review note recorded on each. Every submission is handled on its
+own: a summary afterwards says how many were approved or rejected and names
+any that were skipped and why (for example, already reviewed by another
+admin), while the rest still go through.
 
 Admins can feature up to three events with **Feature** in the event detail
 view (**Unfeature** takes it back). Featured events appear as cards in a
@@ -150,7 +158,18 @@ them; the selection lives in the URL as `?group=arts&group=music`) and tag
 their submissions with active groups. A search box above the chips narrows
 every view by event title, description, or location (for example `?q=jazz`),
 lists the matching activities under the bar so each can be opened directly,
-and combines with the group selection. Only signed-in admins see **Groups** in
+and combines with the group selection. The list also appears when only group
+chips are selected.
+
+Signed-in admins can tag many events at once from that list: **Select**
+turns each row into a checkbox (a repeating event is listed once, since tags
+apply to the whole event), **Select all** checks every event in the current
+month, week, or day, and **Add tags…** adds the chosen groups to every
+checked event (up to 500 at a time). Groups an event already has are kept,
+and nothing else changes: per-date edits, cancelled and skipped dates, and
+featuring stay as they were, and an edit awaiting review keeps the new tags
+when it is approved. A summary says how many events were tagged or already
+had the tags, and names any that couldn't be tagged. Only signed-in admins see **Groups** in
 the header, where they create groups (name, link name, color, description),
 rename, recolor, deactivate, or delete them; the server enforces this on
 every group-management route. Deactivating a group hides it along with events

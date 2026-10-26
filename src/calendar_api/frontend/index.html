@@ -333,7 +333,40 @@
           </button>
         </div>
         <p id="review-queue-error" class="form-error" role="alert"></p>
+        <p id="review-bulk-summary" class="bulk-summary" role="status"></p>
+        <div class="bulk-select-row" id="review-select-row" hidden>
+          <label class="bulk-select-all"><input type="checkbox" id="review-select-all" /> Select all</label>
+        </div>
+        <div id="review-bulk-bar" class="bulk-bar" hidden>
+          <p id="review-bulk-count" class="bulk-count"></p>
+          <label class="field-label">Review note<textarea id="review-bulk-note" rows="2" maxlength="4000" placeholder="Optional note recorded on every selected submission"></textarea></label>
+          <div class="bulk-actions">
+            <button class="quiet-button" id="review-bulk-reject" type="button">Reject selected</button>
+            <button class="primary-button" id="review-bulk-approve" type="button">Approve selected</button>
+          </div>
+        </div>
         <div id="review-queue-list" class="review-queue-list" aria-live="polite"></div>
+      </div>
+    </dialog>
+
+    <dialog id="bulk-tags-dialog" class="form-dialog" aria-labelledby="bulk-tags-title">
+      <div class="dialog-surface bulk-tags-surface">
+        <div class="dialog-header form-dialog-header">
+          <div>
+            <p class="eyebrow">Calendar administration</p>
+            <h2 id="bulk-tags-title">Add tags</h2>
+            <p id="bulk-tags-intro" class="form-intro">Choose groups to add to the selected events. Groups they already have are kept, and nothing else about them changes.</p>
+          </div>
+          <button class="icon-close" type="button" data-close="bulk-tags-dialog" aria-label="Close add tags">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" /></svg>
+          </button>
+        </div>
+        <div id="bulk-tags-options" class="group-options" aria-live="polite"></div>
+        <p id="bulk-tags-error" class="form-error" role="alert"></p>
+        <div class="form-footer-actions">
+          <button class="quiet-button" type="button" data-close="bulk-tags-dialog">Cancel</button>
+          <button class="primary-button" id="bulk-tags-apply" type="button" disabled>Add tags</button>
+        </div>
       </div>
     </dialog>
 

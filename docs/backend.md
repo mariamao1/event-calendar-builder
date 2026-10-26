@@ -178,6 +178,9 @@ Admin routes (require admin authentication, see below):
 | `POST` | `/api/v1/admin/events/{event_id}/revisions` | Edit and immediately approve an event |
 | `POST` | `/api/v1/admin/events/{event_id}/revisions/{revision_id}/approve` | Publish atomically |
 | `POST` | `/api/v1/admin/events/{event_id}/revisions/{revision_id}/reject` | Reject while retaining prior publication |
+| `POST` | `/api/v1/admin/events/bulk/approve` | Approve many pending revisions at once (see bulk actions) |
+| `POST` | `/api/v1/admin/events/bulk/reject` | Reject many pending revisions with one shared note |
+| `POST` | `/api/v1/admin/events/bulk/tags` | Add groups to many published events without editing them |
 | `POST` | `/api/v1/admin/events/{event_id}/revoke` | Unpublish and cancel future occurrences |
 | `POST` | `/api/v1/admin/events/{event_id}/cancel` | Admin-only alias of event cancellation |
 | `DELETE` | `/api/v1/admin/events/{event_id}` | Admin-only alias of event deletion |
@@ -198,6 +201,41 @@ around the requested one, up to six `upcoming` dates with `upcoming_count`, and
 `skipped` dates (deleted on their own, restorable). Occurrence objects carry
 `instance_exception` (`"cancelled"`, `"skipped"`, or `null`). Submitter
 details are never included.
+
+## Bulk actions
+
+Admins act on many items in one request instead of clicking through them
+one at a time.
+
+- `POST /api/v1/admin/events/bulk/approve` and `.../bulk/reject` take
+  `{actor, note?, items: [{event_id, revision_id}, …]}` (1–200 items). Each
+  item is approved or rejected exactly as the single-item routes would,
+  with the shared `note` recorded on every one.
+- Every item runs in its own savepoint inside one transaction, so one stale
+  item (already reviewed, deleted, or unknown) rolls back alone and the rest
+  still go through. Repeated items are processed once.
+- The response is `200` with `results` (in request order: `event_id`,
+  `ok`, `status`, and on failure `error: {code, message}` using the
+  single-item route's code, such as `conflict` or `not_found`) and
+  `counts` per status plus `failed`. Malformed or oversize bodies report
+  `422` and change nothing.
+- `POST /api/v1/admin/events/bulk/tags` takes
+  `{actor, event_ids: [...], group_ids: [...]}` (1–500 events, at least one
+  group). Every group must be active, otherwise the whole request reports
+  `422` and nothing changes. Each event reports `tagged`, `unchanged` (it
+  and any pending edit already carry every group), or a failure
+  (`not_found` for missing, deleted, or never-published events).
+  Cancelled events can be tagged.
+- Tagging is not an edit. It publishes a copy of the event's published
+  revision with the extra groups (review note "Tags added", audit action
+  `tag`) and never touches occurrences: dates, per-date edits,
+  cancellations, skipped dates, the featured pin, RSVPs, and files stay as
+  they were. Groups the event already has are kept. If an edit awaits
+  review, it gains the groups too and stays in the queue, so approving it
+  keeps them; a later correction saved from a form opened before the tag
+  replaces the pending edit's groups as any save does. Approving that edit
+  renumbers it past the tag revision, so revision numbers and the `.ics`
+  `SEQUENCE` keep rising.
 
 ## Featured events
 

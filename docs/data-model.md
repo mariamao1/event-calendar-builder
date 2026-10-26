@@ -58,6 +58,20 @@ with its last approved content while an edit is reviewed:
   events are excluded from the calendar, the detail view, the review queue,
   and creator reads, so a deleted event no longer exists. Future occurrences
   are cancelled for downstream history, matching revoke.
+- Tag (migration `014_event_tag_action.sql`): an admin adds groups without
+  editing. The published revision is copied into a new `approved` revision
+  (inserted pending, given its group and recurrence-date rows, then
+  approved, which the triggers allow) carrying the extra groups, and
+  `published_revision_id` moves to it; a `tag` action is recorded.
+  Occurrence rows are not touched, so per-date edits and exceptions
+  survive. A pending edit stays current and gains the groups in place, so
+  approving it keeps them; otherwise `current_revision_id` moves to the tag
+  revision too.
+
+Revision numbers follow publication order: a new revision takes the event's
+highest number plus one, and approving a pending edit that a tag revision
+overtook renumbers it (still pending) past the tag revision, so the iCal
+`SEQUENCE` derived from the published number never goes backwards.
 
 Approved/rejected/revoked revision content is immutable. A correction is another
 revision. Database triggers enforce this for the revision and its group and

@@ -196,3 +196,31 @@ def test_calendar_shell_contains_review_queue(tmp_path: Path) -> None:
         "review-queue-button",
     ):
         assert symbol in javascript
+
+
+def test_review_queue_supports_bulk_review(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        shell = client.get("/").text
+        javascript = client.get("/static/app.js").text
+        stylesheet = client.get("/static/styles.css").text
+
+    for marker in (
+        'id="review-select-all"',
+        'id="review-bulk-bar"',
+        'id="review-bulk-count"',
+        'id="review-bulk-note"',
+        'id="review-bulk-approve"',
+        'id="review-bulk-reject"',
+        'id="review-bulk-summary"',
+    ):
+        assert marker in shell
+    for symbol in (
+        "bulkModerateReview",
+        "bulkSummaryText",
+        "updateReviewBulkBar",
+        "review-card-select",
+        "/api/v1/admin/events/bulk/",
+    ):
+        assert symbol in javascript
+    assert ".review-card-select" in stylesheet
+    assert ".bulk-bar" in stylesheet

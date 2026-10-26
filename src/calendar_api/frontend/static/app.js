@@ -141,6 +141,8 @@ const state = {
   // Set when keyboard navigation pages the month grid, so focus follows
   // onto the newly rendered month.
   focusMonthAfterRender: false,
+  // Admin select mode on the results list, for adding tags in bulk.
+  selectMode: false,
 };
 
 function utcDate(year, month, day) {
@@ -758,36 +760,132 @@ function renderCalendar() {
   renderSearchResults();
 }
 
-// Matching activities for the current search, listed under the search bar.
-// The rows come from the same filtered calendar request as the grid, so the
-// list and the visible events always agree; selecting a row opens that event.
+// Matching activities for the current search or group filter, listed under
+// the search bar. The rows come from the same filtered calendar request as
+// the grid, so the list and the visible events always agree; selecting a row
+// opens that event. Admins can switch the list into select mode to add tags
+// to many events at once.
 const SEARCH_RESULTS_LIMIT = 50;
+// The server tags at most this many events per request.
+const BULK_TAG_LIMIT = 500;
+// Event ids checked in select mode, and the last bulk-tag summary.
+const tagSelection = new Set();
+let tagSummary = "";
+// The rows currently listed in select mode, for "Select all".
+let tagListedEvents = [];
+// The view and filters the summary was made in; it is cleared once they change.
+let tagSummaryView = "";
+
+function currentTagView() {
+  return [state.view, dateKey(state.anchorDate), dateKey(state.displayedMonth), state.search, ...state.groupFilter].join("|");
+}
+
+function resetTagSelectMode() {
+  state.selectMode = false;
+  tagSelection.clear();
+  tagSummary = "";
+}
+
+// One row per event: a repeating event appears once, at its first date in
+// view, because tags apply to the whole event.
+function collapseByEvent(events) {
+  const seen = new Set();
+  return events.filter((event) => {
+    if (seen.has(event.event_id)) return false;
+    seen.add(event.event_id);
+    return true;
+  });
+}
+
+function setSelectMode(on) {
+  resetTagSelectMode();
+  state.selectMode = on;
+  renderSearchResults();
+}
 
 function renderSearchResults() {
   const container = document.querySelector("#search-results");
   if (!container) return;
-  if (!state.search) {
+  const admin = isAdminSignedIn();
+  if (!admin && state.selectMode) resetTagSelectMode();
+  if (tagSummary && tagSummaryView !== currentTagView()) tagSummary = "";
+  const filtering = Boolean(state.search) || state.groupFilter.length > 0;
+  if (!filtering) {
     container.hidden = true;
     container.replaceChildren();
     return;
   }
   container.hidden = false;
+  const selecting = admin && state.selectMode;
+  const events = selecting ? collapseByEvent(state.events) : state.events;
+  // Drop selections that left the view (another month, a narrower search).
+  const listed = new Set(events.map((event) => event.event_id));
+  for (const eventId of [...tagSelection]) {
+    if (!listed.has(eventId)) tagSelection.delete(eventId);
+  }
+
+  const top = document.createElement("div");
+  top.className = "search-results-top";
   const heading = document.createElement("p");
   heading.className = "search-results-heading";
-  const count = state.events.length;
-  heading.textContent = count === 0
-    ? `No events match \u201c${state.search}\u201d in this view.`
-    : `${count} result${count === 1 ? "" : "s"} for \u201c${state.search}\u201d`;
+  const count = events.length;
+  const noun = selecting ? "event" : "result";
+  if (state.search) {
+    heading.textContent = count === 0
+      ? `No events match \u201c${state.search}\u201d in this view.`
+      : `${count} ${noun}${count === 1 ? "" : "s"} for \u201c${state.search}\u201d`;
+  } else {
+    heading.textContent = count === 0
+      ? "No events in the selected groups in this view."
+      : `${count} event${count === 1 ? "" : "s"} in the selected groups`;
+  }
+  top.append(heading);
+  if (admin) {
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "quiet-button search-select-toggle";
+    toggle.textContent = selecting ? "Done" : "Select";
+    toggle.setAttribute("aria-pressed", String(selecting));
+    toggle.addEventListener("click", () => setSelectMode(!selecting));
+    top.append(toggle);
+  }
+  const children = [top];
+
+  const summary = document.createElement("p");
+  summary.id = "search-bulk-summary";
+  summary.className = "bulk-summary";
+  summary.setAttribute("role", "status");
+  children.push(summary);
+
+  tagListedEvents = selecting ? events : [];
+  if (selecting && count > 0) children.push(...tagSelectionControls());
+
   const list = document.createElement("ul");
   list.className = "search-results-list";
-  for (const event of state.events.slice(0, SEARCH_RESULTS_LIMIT)) {
+  const shown = selecting ? events : events.slice(0, SEARCH_RESULTS_LIMIT);
+  for (const event of shown) {
     const item = document.createElement("li");
-    const row = document.createElement("button");
-    row.type = "button";
+    const row = document.createElement(selecting ? "label" : "button");
+    if (!selecting) row.type = "button";
     row.className = ["search-result", cancelledClass(event)].filter(Boolean).join(" ");
     row.style.setProperty("--event-color", groupColor(event).solid);
-    row.setAttribute("aria-label", eventAriaLabel(event));
     row.title = eventAriaLabel(event);
+    if (selecting) {
+      const select = document.createElement("input");
+      select.type = "checkbox";
+      select.className = "search-result-select";
+      select.checked = tagSelection.has(event.event_id);
+      select.setAttribute("aria-label", `Select ${eventAriaLabel(event)}`);
+      select.dataset.eventId = event.event_id;
+      select.addEventListener("change", () => {
+        if (select.checked) tagSelection.add(event.event_id);
+        else tagSelection.delete(event.event_id);
+        refreshTagSelectionControls();
+      });
+      row.append(select);
+    } else {
+      row.setAttribute("aria-label", eventAriaLabel(event));
+    }
     const title = document.createElement("span");
     title.className = "search-result-title";
     title.textContent = event.title;
@@ -798,18 +896,168 @@ function renderSearchResults() {
     when.textContent = formatOccurrenceLabel(event);
     row.append(title, when);
     appendGroupTags(row, event);
-    row.addEventListener("click", () => openEventDialog(event));
+    if (!selecting) row.addEventListener("click", () => openEventDialog(event));
     item.append(row);
     list.append(item);
   }
-  container.replaceChildren(heading, list);
-  if (count > SEARCH_RESULTS_LIMIT) {
+  children.push(list);
+  if (!selecting && count > SEARCH_RESULTS_LIMIT) {
     const more = document.createElement("p");
     more.className = "search-results-more";
     more.textContent = `Showing the first ${SEARCH_RESULTS_LIMIT}. Refine your search to narrow it down.`;
-    container.append(more);
+    children.push(more);
+  }
+  container.replaceChildren(...children);
+  // Filled in after insertion: screen readers skip live regions that
+  // arrive with their text already in place.
+  if (selecting && tagSummary) summary.textContent = tagSummary;
+}
+
+// Swap in fresh controls without rebuilding the list, so keyboard focus
+// stays on the checkbox that was just toggled.
+function refreshTagSelectionControls() {
+  const container = document.querySelector("#search-results");
+  const row = container.querySelector(".bulk-select-row");
+  const bar = container.querySelector(".bulk-bar");
+  if (!row || !bar) return;
+  const focusedSelectAll = row.contains(document.activeElement);
+  const [nextRow, nextBar] = tagSelectionControls();
+  row.replaceWith(nextRow);
+  bar.replaceWith(nextBar);
+  if (focusedSelectAll) nextRow.querySelector("input").focus();
+  for (const input of container.querySelectorAll(".search-result-select")) {
+    input.checked = tagSelection.has(input.dataset.eventId);
   }
 }
+
+// "Select all" plus the action bar shown above the list in select mode.
+function tagSelectionControls() {
+  const events = tagListedEvents;
+  const selectedCount = tagSelection.size;
+  const row = document.createElement("div");
+  row.className = "bulk-select-row";
+  const label = document.createElement("label");
+  label.className = "bulk-select-all";
+  const selectAll = document.createElement("input");
+  selectAll.type = "checkbox";
+  selectAll.checked = selectedCount === events.length;
+  selectAll.indeterminate = selectedCount > 0 && selectedCount < events.length;
+  selectAll.addEventListener("change", () => {
+    if (selectAll.checked) for (const event of events) tagSelection.add(event.event_id);
+    else tagSelection.clear();
+    refreshTagSelectionControls();
+  });
+  label.append(selectAll, " Select all");
+  row.append(label);
+
+  const bar = document.createElement("div");
+  bar.className = "bulk-bar";
+  bar.hidden = selectedCount === 0;
+  const countText = document.createElement("p");
+  countText.className = "bulk-count";
+  countText.textContent = `${selectedCount} selected`;
+  bar.append(countText);
+  const tooMany = selectedCount > BULK_TAG_LIMIT;
+  if (tooMany) {
+    const note = document.createElement("p");
+    note.className = "bulk-note";
+    note.textContent = `Select at most ${BULK_TAG_LIMIT} events at a time. Narrow the search or switch to a shorter view.`;
+    bar.append(note);
+  }
+  const actions = document.createElement("div");
+  actions.className = "bulk-actions";
+  const addTags = document.createElement("button");
+  addTags.type = "button";
+  addTags.className = "primary-button";
+  addTags.textContent = "Add tags\u2026";
+  addTags.disabled = selectedCount === 0 || tooMany;
+  addTags.addEventListener("click", openBulkTagsDialog);
+  actions.append(addTags);
+  bar.append(actions);
+  return [row, bar];
+}
+
+const bulkTagsDialog = document.querySelector("#bulk-tags-dialog");
+const bulkTagsApply = document.querySelector("#bulk-tags-apply");
+
+function chosenBulkTagGroups() {
+  return [...document.querySelectorAll("#bulk-tags-options input:checked")].map(
+    (input) => input.value
+  );
+}
+
+function openBulkTagsDialog() {
+  if (!isAdminSignedIn() || tagSelection.size === 0) return;
+  const count = tagSelection.size;
+  document.querySelector("#bulk-tags-intro").textContent =
+    `Choose groups to add to the ${count} selected event${count === 1 ? "" : "s"}. `
+    + "Groups they already have are kept, and nothing else about them changes.";
+  document.querySelector("#bulk-tags-error").textContent = "";
+  const container = document.querySelector("#bulk-tags-options");
+  const options = state.groups.map((group) => {
+    const label = document.createElement("label");
+    label.className = "group-option";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.value = group.id;
+    input.addEventListener("change", () => {
+      bulkTagsApply.disabled = chosenBulkTagGroups().length === 0;
+    });
+    const swatch = document.createElement("span");
+    swatch.className = "group-swatch";
+    swatch.setAttribute("aria-hidden", "true");
+    if (isHexColor(group.color)) swatch.style.background = group.color;
+    const text = document.createElement("span");
+    text.textContent = group.name;
+    label.append(input, swatch, text);
+    return label;
+  });
+  if (options.length) {
+    container.replaceChildren(...options);
+  } else {
+    const empty = document.createElement("p");
+    empty.className = "group-options-state";
+    empty.textContent = "No groups are available yet.";
+    container.replaceChildren(empty);
+  }
+  bulkTagsApply.disabled = true;
+  bulkTagsDialog.showModal();
+}
+
+async function applyBulkTags() {
+  const groupIds = chosenBulkTagGroups();
+  if (!isAdminSignedIn() || groupIds.length === 0 || tagSelection.size === 0) return;
+  const eventIds = [...tagSelection];
+  const titles = new Map(state.events.map((event) => [event.event_id, event.title]));
+  const error = document.querySelector("#bulk-tags-error");
+  error.textContent = "";
+  bulkTagsApply.disabled = true;
+  try {
+    const result = await jsonRequest("/api/v1/admin/events/bulk/tags", {
+      method: "POST",
+      headers: { ...reviewQueueHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ actor: adminDisplayName(), event_ids: eventIds, group_ids: groupIds }),
+    });
+    bulkTagsDialog.close();
+    tagSelection.clear();
+    tagSummary = bulkSummaryText(
+      result,
+      { tagged: "tagged", unchanged: "already tagged" },
+      (eventId) => titles.get(eventId) || "An event"
+    );
+    tagSummaryView = currentTagView();
+    await loadMonth();
+    renderSearchResults();
+    // The "Add tags…" button that opened the dialog is gone after the
+    // re-render; keep keyboard focus in the list's controls.
+    document.querySelector("#search-results .search-select-toggle")?.focus();
+  } catch (failure) {
+    error.textContent = handleReviewAuthError(failure) || failure.message;
+    bulkTagsApply.disabled = chosenBulkTagGroups().length === 0;
+  }
+}
+
+bulkTagsApply.addEventListener("click", applyBulkTags);
 
 // The strip of featured events above the calendar. Featuring is global, so
 // it ignores the view, group filter, and search. The server leaves out events
@@ -2872,6 +3120,8 @@ const reviewQueueError = document.querySelector("#review-queue-error");
 const reviewDetailDialog = document.querySelector("#review-detail-dialog");
 let eventFormMode = { eventId: null, managementToken: null, stayPending: false, scope: null, occurrenceId: null, occurrence: null };
 let reviewQueueItems = [];
+// Event ids of the queue cards checked for a bulk approve/reject.
+const reviewSelection = new Set();
 let reviewDetail = null;
 let availableGroups = [];
 
@@ -4095,6 +4345,8 @@ function updateAccountUi() {
     updateReviewQueueButton();
     closeAdminDialogs();
   }
+  // The Select toggle on the results list is admin-only.
+  renderSearchResults();
 }
 
 async function submitAccountForm(event) {
@@ -4156,12 +4408,14 @@ function closeAdminDialogs() {
   if (reviewQueueDialog.open) reviewQueueDialog.close();
   if (reviewDetailDialog.open) reviewDetailDialog.close();
   if (groupsDialog.open) groupsDialog.close();
+  if (bulkTagsDialog.open) bulkTagsDialog.close();
 }
 
 function signOut() {
   safeSessionRemove("calendar-session-token");
   safeSessionRemove("calendar-session-name");
   safeSessionRemove("calendar-session-admin");
+  resetTagSelectMode();
   updateAccountUi();
 }
 
@@ -4257,10 +4511,23 @@ function reviewCard(item) {
   const card = document.createElement("article");
   card.className = "review-card";
 
+  const heading = document.createElement("div");
+  heading.className = "review-card-heading";
+  const select = document.createElement("input");
+  select.type = "checkbox";
+  select.className = "review-card-select";
+  select.checked = reviewSelection.has(item.event_id);
+  select.setAttribute("aria-label", `Select \u201c${item.title}\u201d`);
+  select.addEventListener("change", () => {
+    if (select.checked) reviewSelection.add(item.event_id);
+    else reviewSelection.delete(item.event_id);
+    updateReviewBulkBar();
+  });
   const title = document.createElement("h3");
   title.className = "review-card-title";
   title.textContent = item.title;
-  card.append(title);
+  heading.append(select, title);
+  card.append(heading);
 
   const meta = document.createElement("p");
   meta.className = "review-card-meta";
@@ -4318,6 +4585,12 @@ function reviewCard(item) {
 }
 
 function renderReviewQueue() {
+  // Drop selections whose submissions were reviewed elsewhere.
+  const loaded = new Set(reviewQueueItems.map((item) => item.event_id));
+  for (const eventId of [...reviewSelection]) {
+    if (!loaded.has(eventId)) reviewSelection.delete(eventId);
+  }
+  updateReviewBulkBar();
   if (reviewQueueItems.length === 0) {
     const empty = document.createElement("p");
     empty.className = "review-queue-empty";
@@ -4331,6 +4604,7 @@ function renderReviewQueue() {
 async function openReviewQueue() {
   if (!isAdminSignedIn()) return;
   setReviewQueueError("");
+  document.querySelector("#review-bulk-summary").textContent = "";
   reviewQueueList.replaceChildren();
   const loading = document.createElement("p");
   loading.className = "review-queue-empty";
@@ -4488,6 +4762,95 @@ async function moderateReview(eventId, revisionId, action) {
     for (const button of buttons) button.disabled = false;
   }
 }
+
+function updateReviewBulkBar() {
+  const count = reviewSelection.size;
+  const total = reviewQueueItems.length;
+  document.querySelector("#review-select-row").hidden = total === 0;
+  const selectAll = document.querySelector("#review-select-all");
+  selectAll.checked = total > 0 && count === total;
+  selectAll.indeterminate = count > 0 && count < total;
+  document.querySelector("#review-bulk-bar").hidden = count === 0;
+  document.querySelector("#review-bulk-count").textContent =
+    `${count} selected`;
+}
+
+// One line describing a batch result, shared by bulk review and bulk
+// tagging: "12 approved, 1 skipped: Rooftop cinema night (revision is not
+// pending)". `labels` maps success statuses to words, in display order.
+function bulkSummaryText(result, labels, titleFor) {
+  const counts = result.counts || {};
+  const parts = Object.entries(labels)
+    .filter(([status]) => counts[status])
+    .map(([status, word]) => `${counts[status]} ${word}`);
+  const failed = (result.results || []).filter((item) => !item.ok);
+  if (failed.length) {
+    const reasons = failed
+      .map((item) => `${titleFor(item.event_id)} (${item.error?.message || "failed"})`)
+      .join("; ");
+    parts.push(`${failed.length} skipped: ${reasons}`);
+  }
+  return parts.join(", ") || "Nothing changed.";
+}
+
+async function bulkModerateReview(action) {
+  if (!isAdminSignedIn() || reviewSelection.size === 0) return;
+  const selected = reviewQueueItems.filter((item) => reviewSelection.has(item.event_id));
+  if (
+    action === "reject"
+    && !window.confirm(
+      `Reject ${selected.length} submission${selected.length === 1 ? "" : "s"}? `
+        + "They will stay off the public calendar."
+    )
+  ) {
+    return;
+  }
+  const titles = new Map(selected.map((item) => [item.event_id, item.title]));
+  const noteField = document.querySelector("#review-bulk-note");
+  const note = noteField.value.trim();
+  const summary = document.querySelector("#review-bulk-summary");
+  const buttons = [...reviewQueueDialog.querySelectorAll("button")];
+  for (const button of buttons) button.disabled = true;
+  setReviewQueueError("");
+  summary.textContent = "";
+  try {
+    const body = {
+      actor: adminDisplayName(),
+      items: selected.map((item) => ({ event_id: item.event_id, revision_id: item.revision_id })),
+    };
+    if (note) body.note = note;
+    const result = await jsonRequest(`/api/v1/admin/events/bulk/${action}`, {
+      method: "POST",
+      headers: { ...reviewQueueHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    reviewSelection.clear();
+    noteField.value = "";
+    summary.textContent = bulkSummaryText(
+      result,
+      action === "approve" ? { approved: "approved" } : { rejected: "rejected" },
+      (eventId) => titles.get(eventId) || "A submission"
+    );
+    await refreshReviewQueue();
+    // Approvals publish new occurrences; show them on the calendar at once.
+    if (result.counts?.approved) loadMonth();
+  } catch (error) {
+    setReviewQueueError(handleReviewAuthError(error) || error.message);
+  } finally {
+    for (const button of buttons) button.disabled = false;
+  }
+}
+
+document.querySelector("#review-select-all").addEventListener("change", (event) => {
+  if (event.target.checked) {
+    for (const item of reviewQueueItems) reviewSelection.add(item.event_id);
+  } else {
+    reviewSelection.clear();
+  }
+  renderReviewQueue();
+});
+document.querySelector("#review-bulk-approve").addEventListener("click", () => bulkModerateReview("approve"));
+document.querySelector("#review-bulk-reject").addEventListener("click", () => bulkModerateReview("reject"));
 
 async function editReviewSubmission(eventId) {
   if (reviewDetailDialog.open) reviewDetailDialog.close();

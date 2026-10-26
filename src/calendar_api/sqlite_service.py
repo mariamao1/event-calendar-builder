@@ -249,6 +249,22 @@ def _require_active_groups(
         raise ValidationError("every group_id must reference an active group")
 
 
+def require_active_groups(
+    connection: sqlite3.Connection, group_ids: list[UUID]
+) -> None:
+    """Raise a validation error unless every id names an active group."""
+    _require_active_groups(connection, group_ids)
+
+
+def _next_revision_number(connection: sqlite3.Connection, event_id: str) -> int:
+    """The next free revision number, so numbers follow publication order."""
+    return connection.execute(
+        "SELECT COALESCE(MAX(revision_number), 0) + 1 FROM event_revisions"
+        " WHERE event_id = ?",
+        (str(event_id),),
+    ).fetchone()[0]
+
+
 def _insert_revision(
     connection: sqlite3.Connection,
     event_id: str,
@@ -519,7 +535,7 @@ def create_revision(
     revision = _insert_revision(
         connection,
         str(event_id),
-        event["revision_number"] + 1,
+        _next_revision_number(connection, str(event_id)),
         event["current_revision_id"],
         payload,
     )
@@ -903,6 +919,15 @@ def approve_revision(
         window_start,
         window_end,
     )
+    # A tag revision may have been published while this edit waited; renumber
+    # the edit past it so revision numbers (and iCal SEQUENCE) keep rising.
+    next_number = _next_revision_number(connection, str(event_id))
+    if revision["revision_number"] < next_number - 1:
+        connection.execute(
+            "UPDATE event_revisions SET revision_number = ? WHERE id = ?",
+            (next_number, str(revision_id)),
+        )
+        revision["revision_number"] = next_number
     reviewed_at = _timestamp(now)
     connection.execute(
         """
@@ -2184,6 +2209,132 @@ def unfeature_event(connection: sqlite3.Connection, event_id: UUID) -> dict:
 # change to the series always persists over earlier exceptions.
 
 
+# Revision content copied verbatim when tags are added without an edit.
+_TAG_COPY_COLUMNS = (
+    "title, description, location_name, location_address, virtual_url, "
+    "event_url, attachments, rsvp_enabled, is_all_day, starts_at, ends_at, "
+    "start_date, end_date, timezone, recurrence_rule, submitted_by_name, "
+    "submitted_by_channel, submitted_by_contact, submitted_at"
+)
+TAG_NOTE = "Tags added"
+
+
+def add_event_tags(
+    connection: sqlite3.Connection,
+    event_id: UUID,
+    group_ids: list[UUID],
+    *,
+    actor: str,
+    now: datetime | None = None,
+) -> dict:
+    """Add groups to a published event without counting as an edit.
+
+    The published revision is copied into a new approved revision carrying
+    the extra groups; occurrences are left alone, so per-date edits,
+    cancellations, and skipped dates survive. A pending edit gains the groups
+    too, so approving it later keeps them.
+    """
+    now_text = _timestamp(now)
+    event = connection.execute(
+        """
+        SELECT e.id, e.current_revision_id, e.published_revision_id,
+               e.archived_at, r.approval_status AS current_status
+          FROM events e
+          JOIN event_revisions r ON r.id = e.current_revision_id
+         WHERE e.id = ?
+        """,
+        (str(event_id),),
+    ).fetchone()
+    if (
+        event is None
+        or event["archived_at"] is not None
+        or event["published_revision_id"] is None
+    ):
+        raise NotFoundError("event not found")
+    requested = {str(group_id) for group_id in group_ids}
+    published_id = event["published_revision_id"]
+    published_groups = _published_group_ids(connection, published_id)
+    missing_published = requested - published_groups
+    pending_id = (
+        event["current_revision_id"] if event["current_status"] == "pending" else None
+    )
+    missing_pending = (
+        requested - _published_group_ids(connection, pending_id) if pending_id else set()
+    )
+    if not missing_published and not missing_pending:
+        return {"event_id": str(event_id), "status": "unchanged", "revision_id": None}
+
+    if missing_pending:
+        connection.executemany(
+            """
+            INSERT OR IGNORE INTO event_revision_groups
+              (event_revision_id, group_id, created_at) VALUES (?, ?, ?)
+            """,
+            [(pending_id, group_id, now_text) for group_id in sorted(missing_pending)],
+        )
+
+    revision_id = None
+    if missing_published:
+        revision_id = str(uuid4())
+        connection.execute(
+            f"""
+            INSERT INTO event_revisions (
+              id, event_id, revision_number, supersedes_revision_id,
+              approval_status, {_TAG_COPY_COLUMNS}, reviewed_at,
+              reviewed_by, review_note
+            )
+            SELECT ?, event_id, ?, id, 'approved', {_TAG_COPY_COLUMNS}, ?, ?, ?
+              FROM event_revisions WHERE id = ?
+            """,
+            (
+                revision_id,
+                _next_revision_number(connection, str(event_id)),
+                now_text,
+                actor,
+                TAG_NOTE,
+                published_id,
+            ),
+        )
+        connection.executemany(
+            """
+            INSERT INTO event_revision_groups (event_revision_id, group_id, created_at)
+            VALUES (?, ?, ?)
+            """,
+            [
+                (revision_id, group_id, now_text)
+                for group_id in sorted(published_groups | requested)
+            ],
+        )
+        connection.execute(
+            """
+            INSERT INTO event_revision_recurrence_dates
+              (event_revision_id, local_start, kind, created_at)
+            SELECT ?, local_start, kind, ? FROM event_revision_recurrence_dates
+             WHERE event_revision_id = ?
+            """,
+            (revision_id, now_text, published_id),
+        )
+        connection.execute(
+            """
+            UPDATE events
+               SET published_revision_id = ?,
+                   current_revision_id = CASE WHEN ? THEN current_revision_id ELSE ? END,
+                   updated_at = ?
+             WHERE id = ?
+            """,
+            (revision_id, pending_id is not None, revision_id, now_text, str(event_id)),
+        )
+        connection.execute(
+            """
+            INSERT INTO event_review_actions
+              (id, event_id, event_revision_id, action, actor, note, occurred_at)
+            VALUES (?, ?, ?, 'tag', ?, ?, ?)
+            """,
+            (str(uuid4()), str(event_id), revision_id, actor, TAG_NOTE, now_text),
+        )
+    return {"event_id": str(event_id), "status": "tagged", "revision_id": revision_id}
+
+
 def _scoped_event(connection: sqlite3.Connection, event_id: UUID) -> dict:
     """Load an event for a scoped operation (deleted events read as missing)."""
     row = connection.execute(
@@ -2661,15 +2812,11 @@ def _commit_scoped_revision(
     now: datetime,
 ) -> dict:
     """Insert, point at, and reconcile a scoped approved revision."""
-    current = connection.execute(
-        "SELECT revision_number FROM event_revisions WHERE id = ?",
-        (event["current_revision_id"],),
-    ).fetchone()
     now_text = _timestamp(now)
     revision_row = _insert_approved_revision(
         connection,
         event["id"],
-        current["revision_number"] + 1,
+        _next_revision_number(connection, event["id"]),
         event["current_revision_id"],
         validated,
         actor=actor,

@@ -112,3 +112,54 @@ def test_calendar_views_render_group_tags(tmp_path: Path) -> None:
         assert "event-tag" in javascript, renderer
     assert ".event-tag" in stylesheet
     assert ".event-tags" in stylesheet
+
+
+def test_admin_can_bulk_tag_from_results(tmp_path: Path) -> None:
+    """Admins select events in the results list and add groups to them all."""
+    with _client(tmp_path) as client:
+        javascript = client.get("/static/app.js").text
+        shell = client.get("/").text
+
+    for marker in (
+        'id="bulk-tags-dialog"',
+        'id="bulk-tags-options"',
+        'id="bulk-tags-apply"',
+        'id="bulk-tags-error"',
+    ):
+        assert marker in shell
+    for symbol in (
+        "collapseByEvent",
+        "applyBulkTags",
+        "search-select-toggle",
+        "search-result-select",
+        "search-bulk-summary",
+        "/api/v1/admin/events/bulk/tags",
+        "state.groupFilter.length",
+    ):
+        assert symbol in javascript
+    start = javascript.index("function renderSearchResults")
+    end = javascript.index("\nfunction ", start + 10)
+    section = javascript[start:end]
+    assert "isAdminSignedIn" in section
+    assert "collapseByEvent" in section
+
+
+def test_bulk_tag_select_mode_resets_and_keeps_focus(tmp_path: Path) -> None:
+    """Signing out leaves select mode; applying tags keeps focus and announces."""
+    with _client(tmp_path) as client:
+        javascript = client.get("/static/app.js").text
+
+    start = javascript.index("function signOut")
+    sign_out = javascript[start:javascript.index("\nfunction ", start + 10)]
+    assert "resetTagSelectMode" in sign_out
+
+    start = javascript.index("async function applyBulkTags")
+    apply = javascript[start:javascript.index("\n}\n", start)]
+    assert ".search-select-toggle" in apply and ".focus()" in apply
+
+    # The summary is filled in after insertion so live regions announce it,
+    # and it belongs to the view it was made in.
+    start = javascript.index("function renderSearchResults")
+    render = javascript[start:javascript.index("\nfunction ", start + 10)]
+    assert "tagSummaryView" in render
+    assert 'summary.textContent = selecting ? tagSummary : ""' not in render

@@ -435,7 +435,7 @@ def test_stale_database_gains_restorable_skips(tmp_path: Path) -> None:
         connection.executescript(
             f"""
             ALTER TABLE event_review_actions RENAME TO old_actions;
-            {legacy.replace(", 'restore'", "")};
+            {legacy.replace(", 'restore', 'tag'", "")};
             INSERT INTO event_review_actions SELECT * FROM old_actions;
             DROP TABLE old_actions;
             """

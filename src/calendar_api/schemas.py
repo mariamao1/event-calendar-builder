@@ -455,6 +455,29 @@ class ReviewInput(StrictModel):
     ) = None
 
 
+class BulkReviewItem(StrictModel):
+    event_id: UUID
+    revision_id: UUID
+
+
+class BulkReviewInput(StrictModel):
+    """Approve or reject many submissions with one shared note."""
+
+    actor: Annotated[NonBlank, StringConstraints(max_length=160)]
+    note: (
+        Annotated[str, StringConstraints(strip_whitespace=True, max_length=4000)] | None
+    ) = None
+    items: list[BulkReviewItem] = Field(min_length=1, max_length=200)
+
+
+class BulkTagInput(StrictModel):
+    """Add the same groups to many published events."""
+
+    actor: Annotated[NonBlank, StringConstraints(max_length=160)]
+    event_ids: list[UUID] = Field(min_length=1, max_length=500)
+    group_ids: list[UUID] = Field(min_length=1)
+
+
 class LoginInput(StrictModel):
     username: Annotated[NonBlank, StringConstraints(max_length=160)]
     password: str = Field(min_length=1, max_length=1024)

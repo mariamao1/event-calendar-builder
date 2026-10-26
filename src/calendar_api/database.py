@@ -42,6 +42,12 @@ class Database:
         with self.pool.connection() as connection, connection.transaction():
             yield connection
 
+    @contextmanager
+    def savepoint(self, connection: Connection) -> Iterator[None]:
+        """Roll back only this block on error, inside an open transaction."""
+        with connection.transaction():
+            yield
+
 
 class SQLiteDatabase:
     """Zero-install development database with the same service contract."""
@@ -168,20 +174,32 @@ class SQLiteDatabase:
         finally:
             connection.close()
 
+    @contextmanager
+    def savepoint(self, connection: sqlite3.Connection) -> Iterator[None]:
+        """Roll back only this block on error, inside an open transaction."""
+        connection.execute("SAVEPOINT bulk_item")
+        try:
+            yield
+        except BaseException:
+            connection.execute("ROLLBACK TO bulk_item")
+            connection.execute("RELEASE bulk_item")
+            raise
+        connection.execute("RELEASE bulk_item")
+
 
 def _migrate_review_actions(connection: sqlite3.Connection, schema: str) -> None:
     """Rebuild event_review_actions when its CHECK predates newer actions.
 
     SQLite cannot alter a CHECK constraint, so a database created by an older
-    release would reject the `cancel`, `delete`, and `restore` audit actions
-    with a 500.
+    release would reject the `cancel`, `delete`, `restore`, and `tag` audit
+    actions with a 500.
     The table is a leaf (nothing references it), so rename, recreate from the
     current schema, copy, and drop preserves every existing audit row.
     """
     row = connection.execute(
         "SELECT sql FROM sqlite_master WHERE name = 'event_review_actions'"
     ).fetchone()
-    if row is None or "'restore'" in row[0]:
+    if row is None or "'tag'" in row[0]:
         return
     start = schema.index("CREATE TABLE IF NOT EXISTS event_review_actions")
     end = schema.index(";", start)

@@ -22,7 +22,7 @@ from fastapi.responses import (
 )
 from fastapi.staticfiles import StaticFiles
 
-from . import ical
+from . import bulk, ical
 from .address_search import AddressSearch, AddressSearchUnavailable
 from . import service as postgres_service
 from . import sqlite_service
@@ -32,6 +32,8 @@ from .errors import ApiError, ConflictError, NotFoundError, ValidationError
 from .occurrence_scopes import CONTENT_OVERRIDE_FIELDS, apply_content_override
 from .rate_limit import RateLimiter
 from .schemas import (
+    BulkReviewInput,
+    BulkTagInput,
     MAX_ATTACHMENT_BYTES,
     MAX_FEATURED_EVENTS,
     EventRevisionInput,
@@ -1347,6 +1349,69 @@ def create_app(
     def admin_event(event_id: UUID) -> dict:
         with database.connection() as connection:
             return service.get_admin_event(connection, event_id)
+
+    @app.post("/api/v1/admin/events/bulk/approve", dependencies=[admin])
+    def bulk_approve(payload: BulkReviewInput) -> dict:
+        """Approve many submissions; each succeeds or fails on its own."""
+        review = ReviewInput(actor=payload.actor, note=payload.note)
+
+        def approve_one(item) -> str:
+            service.approve_revision(
+                connection,
+                item.event_id,
+                item.revision_id,
+                review,
+                past_days=settings.materialization_past_days,
+                future_months=settings.materialization_future_months,
+            )
+            return "approved"
+
+        with database.transaction() as connection:
+            return bulk.run_each(
+                payload.items,
+                lambda: database.savepoint(connection),
+                approve_one,
+                event_id=lambda item: item.event_id,
+                dedupe_key=lambda item: (item.event_id, item.revision_id),
+            )
+
+    @app.post("/api/v1/admin/events/bulk/reject", dependencies=[admin])
+    def bulk_reject(payload: BulkReviewInput) -> dict:
+        """Reject many submissions with one shared note."""
+        review = ReviewInput(actor=payload.actor, note=payload.note)
+
+        def reject_one(item) -> str:
+            service.reject_revision(connection, item.event_id, item.revision_id, review)
+            return "rejected"
+
+        with database.transaction() as connection:
+            return bulk.run_each(
+                payload.items,
+                lambda: database.savepoint(connection),
+                reject_one,
+                event_id=lambda item: item.event_id,
+                dedupe_key=lambda item: (item.event_id, item.revision_id),
+            )
+
+    @app.post("/api/v1/admin/events/bulk/tags", dependencies=[admin])
+    def bulk_tags(payload: BulkTagInput) -> dict:
+        """Add groups to many events without counting as edits.
+
+        Every group must be active (`422` otherwise, changing nothing); each
+        event then succeeds (`tagged` or `unchanged`) or fails on its own.
+        """
+        group_ids = list(dict.fromkeys(payload.group_ids))
+
+        def tag_one(event_id: UUID) -> str:
+            return service.add_event_tags(
+                connection, event_id, group_ids, actor=payload.actor
+            )["status"]
+
+        with database.transaction() as connection:
+            service.require_active_groups(connection, group_ids)
+            return bulk.run_each(
+                payload.event_ids, lambda: database.savepoint(connection), tag_one
+            )
 
     @app.post(
         "/api/v1/admin/events/{event_id}/revisions/{revision_id}/approve",
